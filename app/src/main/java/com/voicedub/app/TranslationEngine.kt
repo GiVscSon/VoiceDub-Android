@@ -108,7 +108,7 @@ class YandexCloudTranslationEngine(
 
 /** Broadcast is scoped to our package; carries subtitles, never API credentials. */
 object SubtitleEvents {
-    const val PERMISSION = "com.voicedub.app.permission.INTERNAL_SUBTITLES"
+    val PERMISSION = BuildConfig.APPLICATION_ID + ".permission.INTERNAL_SUBTITLES"
     const val ACTION = "com.voicedub.app.INTERNAL_SUBTITLE"
     const val ORIGINAL = "original"
     const val TRANSLATED = "translated"

@@ -8,7 +8,7 @@ android {
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.voicedub.app"
+        applicationId = "com.voicedub.app.preview"
         minSdk = 29
         targetSdk = 35
         versionCode = 6
@@ -21,6 +21,7 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions { jvmTarget = "17" }
+    buildFeatures { buildConfig = true }
     signingConfigs {
         getByName("debug") {
             storeFile = rootProject.file("debug/voicedub-debug.keystore")

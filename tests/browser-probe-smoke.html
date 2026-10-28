@@ -1,0 +1,14 @@
+<!doctype html><html><head><meta charset="utf-8"/><style>video{display:block;width:620px;height:360px}</style></head><body>
+<div id="mount"></div><pre id="result">waiting</pre>
+<script src="../app/src/main/assets/browser_probe.js"></script>
+<script>
+const holder = document.createElement('section');
+const shadow = holder.attachShadow({mode:'open'});
+shadow.innerHTML='<video width="620" height="360" controls></video>';
+document.getElementById('mount').appendChild(holder);
+setTimeout(() => {
+ const snap = window.__voicedubProbe.snapshot();
+ document.getElementById('result').textContent = JSON.stringify(snap);
+ document.documentElement.setAttribute('data-voice-test', snap.found && snap.count === 1 ? 'pass' : 'fail');
+}, 1250);
+</script></body></html>

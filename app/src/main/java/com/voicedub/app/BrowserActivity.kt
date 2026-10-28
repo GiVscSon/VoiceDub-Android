@@ -195,6 +195,9 @@ class BrowserActivity : Activity() {
         web.settings.javaScriptEnabled = true
         web.settings.domStorageEnabled = true
         web.settings.mediaPlaybackRequiresUserGesture = true
+        web.settings.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_NEVER_ALLOW
+        web.settings.allowFileAccess = false
+        web.settings.allowContentAccess = false
         web.webViewClient = object : WebViewClient() {
             override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
                 super.onPageStarted(view, url, favicon)
@@ -202,7 +205,7 @@ class BrowserActivity : Activity() {
                 publishPlayback(false, true, false, "")
             }
             override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
-                return request?.url?.scheme !in listOf("http", "https")
+                return request?.url?.scheme != "https"
             }
             override fun onPageFinished(view: WebView?, url: String?) {
                 super.onPageFinished(view, url)
@@ -255,10 +258,10 @@ class BrowserActivity : Activity() {
 
     private fun navigate() {
         val text = address.text.toString().trim()
-        val normalized = if (text.startsWith("https://") || text.startsWith("http://")) text else "https://$text"
+        val normalized = if (text.contains("://")) text else "https://$text"
         val uri = android.net.Uri.parse(normalized)
-        if (uri.scheme !in listOf("http", "https") || uri.host.isNullOrBlank()) {
-            label.text = "Неверный адрес сайта"
+        if (uri.scheme != "https" || uri.host.isNullOrBlank()) {
+            label.text = "Для встроенного браузера нужен адрес HTTPS"
             return
         }
         web.loadUrl(normalized)

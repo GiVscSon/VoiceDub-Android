@@ -25,6 +25,8 @@ import java.util.ArrayDeque
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.sqrt
+import java.io.File
+import java.util.concurrent.atomic.AtomicLong
 
 /** Android 10+ user-approved internal PCM -> Vosk ASR -> ML Kit -> Russian TTS. */
 class AudioCaptureService : Service() {
@@ -38,7 +40,14 @@ class AudioCaptureService : Service() {
 
     private val main = Handler(Looper.getMainLooper())
     private val recording = AtomicBoolean(false)
-    private val pendingTexts = ArrayDeque<String>()
+    private data class Segment(val text: String, val reference: ByteArray?)
+    private val pendingTexts = ArrayDeque<Segment>()
+    private val referenceBuffer = VoiceReference()
+    private var cloneClient: CloneSpeechClient? = null
+    private var clonedPlayer: MediaPlayer? = null
+    private var clonedFile: File? = null
+    private val captureEpoch = AtomicLong(0)
+    @Volatile private var captureAllowed = true
     private var translating = false
     private var translatorReady = false
     private var translator: TranslationEngine? = null
@@ -52,7 +61,7 @@ class AudioCaptureService : Service() {
     private var audioRecord: AudioRecord? = null
     private var tts: TextToSpeech? = null
     private var ttsReady = false
-    private val speechQueue = ArrayDeque<String>()
+    private val speechQueue = ArrayDeque<Segment>()
     private var activeUtterance: String? = null
     private var utteranceCounter = 0L
     private var overlay: FloatingStatus? = null
@@ -71,8 +80,11 @@ class AudioCaptureService : Service() {
                 key = intent.getStringExtra(BrowserPlaybackEvents.PLAYER_KEY).orEmpty()
             )
             val decision = playbackGate.update(state)
+            captureAllowed = decision.allowNewSpeech
             if (decision.cancelQueuedSpeech) {
                 translationEpoch++
+                captureEpoch.incrementAndGet()
+                referenceBuffer.clear()
                 pendingTexts.clear()
                 clearSpeechQueue()
                 lastSpoken = ""
@@ -114,8 +126,9 @@ class AudioCaptureService : Service() {
                     override fun onError(utteranceId: String?) { main.post { finishUtterance(utteranceId) } }
                     override fun onError(utteranceId: String?, errorCode: Int) { main.post { finishUtterance(utteranceId) } }
                 })
-                ttsReady = languageStatus != TextToSpeech.LANG_MISSING_DATA &&
+                ttsReady = languageStatus != null && languageStatus != TextToSpeech.LANG_MISSING_DATA &&
                     languageStatus != TextToSpeech.LANG_NOT_SUPPORTED
+                speakNext()
             }
         }
     }
@@ -128,6 +141,9 @@ class AudioCaptureService : Service() {
         if (intent?.action != START || !recording.compareAndSet(false, true)) return START_NOT_STICKY
         outputMode = OutputMode.parse(intent.getStringExtra("outputMode"))
         translationSession = SystemClock.elapsedRealtimeNanos()
+        val endpoint = intent.getStringExtra("voiceEndpoint").orEmpty()
+        try { if (endpoint.isNotBlank() && outputMode != OutputMode.SUBTITLES) cloneClient = CloneSpeechClient(endpoint) }
+        catch (_: Exception) { recording.set(false); stopSelf(); return START_NOT_STICKY }
 
         createNotificationChannel()
         val stop = Intent(this, AudioCaptureService::class.java).setAction(STOP)
@@ -225,6 +241,7 @@ class AudioCaptureService : Service() {
             Model(speechModel.directory(filesDir).absolutePath).use { model ->
                 Recognizer(model, SAMPLE_RATE.toFloat()).use { recognizer ->
                     val buffer = ByteArray(8192)
+                    var seenEpoch = captureEpoch.get()
                     capture.startRecording()
                     showStatus("Захват PCM активен · ожидаю речь")
                     while (recording.get()) {
@@ -233,6 +250,10 @@ class AudioCaptureService : Service() {
                             if (n < 0) showStatus("Ошибка чтения AudioRecord: $n")
                             break
                         }
+                        val epoch = captureEpoch.get()
+                        if (epoch != seenEpoch) { recognizer.reset(); referenceBuffer.clear(); seenEpoch = epoch }
+                        if (!captureAllowed) continue
+                        if (cloneClient != null) referenceBuffer.append(buffer, n - n % 2)
                         val now = SystemClock.elapsedRealtime()
                         if (now - lastStatusUpdateMs >= 2500) {
                             lastStatusUpdateMs = now
@@ -249,12 +270,15 @@ class AudioCaptureService : Service() {
                         }
                         if (recognizer.acceptWaveForm(buffer, n)) {
                             val original = JSONObject(recognizer.result).optString("text").trim()
-                            if (original.isNotEmpty()) main.post { enqueueText(original) }
+                            val reference = if (cloneClient != null) referenceBuffer.wav() else null
+                            if (original.isNotEmpty()) main.post { if (epoch == captureEpoch.get()) enqueueText(original, reference) }
                         }
                     }
                     if (recording.get()) {
                         val rest = JSONObject(recognizer.finalResult).optString("text").trim()
-                        if (rest.isNotEmpty()) main.post { enqueueText(rest) }
+                        val epoch = captureEpoch.get()
+                        val reference = if (cloneClient != null) referenceBuffer.wav() else null
+                        if (rest.isNotEmpty()) main.post { if (epoch == captureEpoch.get()) enqueueText(rest, reference) }
                     }
                 }
             }
@@ -265,16 +289,17 @@ class AudioCaptureService : Service() {
         }
     }
 
-    private fun enqueueText(original: String) {
+    private fun enqueueText(original: String, reference: ByteArray?) {
         if (!recording.get() || original.isBlank() || !playbackGate.allowsSpeech()) return
         if (pendingTexts.size >= 3) pendingTexts.removeFirst()
-        pendingTexts.addLast(original)
+        pendingTexts.addLast(Segment(original, reference))
         translateNext()
     }
 
     private fun translateNext() {
         if (!recording.get() || translating || !translatorReady || pendingTexts.isEmpty() || !playbackGate.allowsSpeech()) return
-        val text = pendingTexts.removeFirst()
+        val segment = pendingTexts.removeFirst()
+        val text = segment.text
         val requestEpoch = translationEpoch
         translating = true
         translator?.translate(text) { result -> main.post {
@@ -286,7 +311,7 @@ class AudioCaptureService : Service() {
             }
             translating = false
             if (result.isFailure && yandexActive) {
-                startLocalFallback(text, result.exceptionOrNull()?.message.orEmpty())
+                startLocalFallback(segment, result.exceptionOrNull()?.message.orEmpty())
                 return@post
             }
             result.onSuccess { translated ->
@@ -302,9 +327,7 @@ class AudioCaptureService : Service() {
                     }, SubtitleEvents.PERMISSION)
                 }
                 if (outputMode != OutputMode.SUBTITLES) {
-                    if (ttsReady) {
-                        enqueueSpeech(translated)
-                    } else showStatus("Переведено, но русский голос TTS недоступен")
+                    enqueueSpeech(Segment(translated, segment.reference))
                 }
             }.onFailure { error -> showStatus("Ошибка перевода: ${error.message}") }
             translateNext()
@@ -312,41 +335,96 @@ class AudioCaptureService : Service() {
     }
 
     /** Keep the current utterance intact; bound waiting speech to limit live lag. */
-    private fun enqueueSpeech(text: String) {
-        if (text.isBlank()) return
+    private fun enqueueSpeech(segment: Segment) {
+        if (segment.text.isBlank()) return
         if (speechQueue.size >= 2) speechQueue.removeFirst()
-        speechQueue.addLast(text)
+        speechQueue.addLast(segment)
         speakNext()
     }
 
     private fun speakNext() {
-        if (!recording.get() || !ttsReady || activeUtterance != null || speechQueue.isEmpty() || !playbackGate.allowsSpeech()) return
+        if (!recording.get() || activeUtterance != null || speechQueue.isEmpty() || !playbackGate.allowsSpeech()) return
+        if (cloneClient == null && !ttsReady) return
+        val segment = speechQueue.removeFirst()
         val id = "dub-${++utteranceCounter}"
         activeUtterance = id
-        val result = tts?.speak(speechQueue.removeFirst(), TextToSpeech.QUEUE_ADD, null, id)
-        if (result != TextToSpeech.SUCCESS) {
-            activeUtterance = null
-            showStatus("Не удалось запустить русскую озвучку")
-            speechQueue.clear()
+        val client = cloneClient
+        if (client != null && segment.reference != null) {
+            showStatus("MOSS: готовлю русскую речь с исходным голосом…")
+            client.synthesize(segment.text, segment.reference) { result -> main.post {
+                if (!recording.get() || activeUtterance != id) return@post
+                result.onSuccess { data ->
+                    try {
+                        val file = File.createTempFile("dub-", ".wav", cacheDir)
+                        clonedFile = file
+                        file.writeBytes(data)
+                        val player = MediaPlayer()
+                        clonedPlayer = player
+                        player.setAudioAttributes(AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                            .setAllowedCapturePolicy(AudioAttributes.ALLOW_CAPTURE_BY_NONE).build())
+                        player.setDataSource(file.absolutePath)
+                        player.setOnCompletionListener { finishUtterance(id) }
+                        player.setOnErrorListener { _, _, _ ->
+                            releaseClonedAudio(); showStatus("Ошибка аудио MOSS · обычный русский голос")
+                            speakSystem(segment.text, id); true
+                        }
+                        player.setOnPreparedListener {
+                            if (activeUtterance == id && recording.get()) {
+                                showStatus("MOSS: воспроизвожу полученную озвучку")
+                                it.start()
+                            }
+                        }
+                        player.prepareAsync()
+                    } catch (_: Exception) {
+                        releaseClonedAudio(); showStatus("Не удалось воспроизвести MOSS · обычный русский голос")
+                        speakSystem(segment.text, id)
+                    }
+                }.onFailure {
+                    showStatus("Сервер MOSS недоступен или занят · обычный русский голос")
+                    speakSystem(segment.text, id)
+                }
+            } }
+        } else {
+            if (client != null) showStatus("Ещё нет 3 секунд образца · обычный русский голос")
+            speakSystem(segment.text, id)
+        }
+    }
+
+    private fun speakSystem(text: String, id: String) {
+        if (activeUtterance != id || !recording.get()) return
+        if (!ttsReady || tts?.speak(text, TextToSpeech.QUEUE_ADD, null, id) != TextToSpeech.SUCCESS) {
+            showStatus("Русский голос TTS недоступен")
+            finishUtterance(id)
         }
     }
 
     private fun finishUtterance(id: String?) {
         if (id == null || activeUtterance != id) return
+        releaseClonedAudio()
         activeUtterance = null
         speakNext()
+    }
+
+    private fun releaseClonedAudio() {
+        try { clonedPlayer?.release() } catch (_: Exception) { }
+        clonedPlayer = null
+        clonedFile?.delete(); clonedFile = null
     }
 
     private fun clearSpeechQueue() {
         speechQueue.clear()
         activeUtterance = null
+        cloneClient?.cancel()
+        releaseClonedAudio()
         tts?.stop()
     }
 
-    private fun startLocalFallback(text: String, cause: String) {
+    private fun startLocalFallback(segment: Segment, cause: String) {
         yandexActive = false
         translatorReady = false
-        pendingTexts.addFirst(text)
+        pendingTexts.addFirst(segment)
         translator?.close()
         val local = LocalTranslationEngine(sourceLanguage)
         translator = local
@@ -376,6 +454,8 @@ class AudioCaptureService : Service() {
 
     override fun onDestroy() {
         recording.set(false)
+        referenceBuffer.clear()
+        captureEpoch.incrementAndGet()
         try { unregisterReceiver(browserPlaybackReceiver) } catch (_: Exception) {}
         try { audioRecord?.stop() } catch (_: Exception) {}
         try { audioRecord?.release() } catch (_: Exception) {}
@@ -387,6 +467,7 @@ class AudioCaptureService : Service() {
         try { projection?.stop() } catch (_: Exception) {}
         translator?.close()
         clearSpeechQueue()
+        cloneClient?.close()
         tts?.shutdown()
         overlay?.hide()
         super.onDestroy()

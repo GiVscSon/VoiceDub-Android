@@ -1,0 +1,9 @@
+.gradle/
+**/build/
+__pycache__/
+*.pyc
+local.properties
+companion/.venv/
+companion/MOSS-TTS-Nano/
+*.wav
+experiment-results/

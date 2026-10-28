@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- Native voice client additionally restricts HTTP to explicit private IPv4 addresses. -->
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors><certificates src="system" /></trust-anchors>
+    </base-config>
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="true">yandex.ru</domain>
+        <domain includeSubdomains="true">yandex.com</domain>
+        <domain includeSubdomains="true">yandex.net</domain>
+        <domain includeSubdomains="true">ya.ru</domain>
+    </domain-config>
+</network-security-config>

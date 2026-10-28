@@ -28,6 +28,9 @@ class MainActivity : Activity() {
     private lateinit var apiKey: EditText
     private lateinit var folderId: EditText
     private lateinit var start: Button
+    private lateinit var cloneEnabled: CheckBox
+    private lateinit var cloneAddress: EditText
+    private lateinit var accountStatus: TextView
 
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
     private fun paragraph(text: String, size: Float = 15f): TextView = TextView(this).apply {
@@ -85,6 +88,47 @@ class MainActivity : Activity() {
             override fun onNothingSelected(parent: android.widget.AdapterView<*>?) = Unit
         }
         content.addView(yandexFields)
+        accountStatus = paragraph("Яндекс VOT: вход не выполнен")
+        content.addView(accountStatus)
+        content.addView(btn("Войти через Яндекс · как в VOT") {
+            startActivityForResult(Intent(this, YandexAuthActivity::class.java), 104)
+        })
+        content.addView(btn("Выйти из Яндекс VOT") {
+            VotAccount.clear()
+            accountStatus.text = "Яндекс VOT: сеанс завершён"
+        })
+        content.addView(paragraph("Вход VOT не заменяет ML Kit и не предоставляет доступ к Yandex Cloud Translate. Получение аудиодорожки VOT ещё не подключено."))
+        cloneEnabled = CheckBox(this).apply {
+            text = "Сохранять особенности исходного голоса · сервер MOSS на моём ПК"
+            isChecked = false
+        }
+        content.addView(cloneEnabled)
+        cloneAddress = EditText(this).apply {
+            hint = "http://192.168.1.10:8765"
+            setSingleLine(true)
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
+            setText(getSharedPreferences("settings", MODE_PRIVATE).getString("voiceEndpoint", ""))
+        }
+        content.addView(cloneAddress)
+        content.addView(paragraph("При включении на указанный сервер отправляются русский текст и 3–8 секунд исходного звука. Образец хранится в памяти до остановки/смены видео; сервер использует временный файл. Для одного говорящего, без разделения голосов и музыки. При ошибке — обычный русский TTS с сообщением."))
+        content.addView(btn("Проверить сервер голоса") {
+            val base = try { VoiceEndpoint.normalize(cloneAddress.text.toString()) } catch (_: Exception) {
+                status.text = "Укажите локальный IP сервера или адрес HTTPS"; return@btn
+            }
+            Thread({
+                val message = try {
+                    val c = java.net.URL("$base/health").openConnection() as java.net.HttpURLConnection
+                    try {
+                        c.instanceFollowRedirects = false; c.connectTimeout = 5000; c.readTimeout = 5000
+                        check(c.responseCode == 200)
+                        val body = c.inputStream.use { String(it.readBytesBounded(4096), Charsets.UTF_8) }
+                        check(org.json.JSONObject(body).optBoolean("ready"))
+                        "Сервер MOSS готов. Передача образца начнётся только при включении режима и захвата."
+                    } finally { c.disconnect() }
+                } catch (_: Exception) { "Сервер голоса недоступен. Проверьте IP, порт и общую сеть телефона и ПК." }
+                runOnUiThread { if (!isFinishing) status.text = message }
+            }, "voice-health").start()
+        })
         content.addView(btn("Открыть встроенный браузер (экспериментально)") {
             startActivity(Intent(this, BrowserActivity::class.java))
         })
@@ -131,7 +175,19 @@ class MainActivity : Activity() {
         }, "model-download").start()
     }
 
+    override fun onResume() {
+        super.onResume()
+        if (::accountStatus.isInitialized) accountStatus.text = "Яндекс VOT: ${VotAccount.username()}"
+    }
+
     private fun requestCapture() {
+        if (cloneEnabled.isChecked) {
+            try {
+                val endpoint = VoiceEndpoint.normalize(cloneAddress.text.toString())
+                cloneAddress.setText(endpoint)
+                getSharedPreferences("settings", MODE_PRIVATE).edit().putString("voiceEndpoint", endpoint).apply()
+            } catch (_: Exception) { status.text = "Укажите локальный IP сервера голоса или адрес HTTPS"; return }
+        }
         if (translatorSelector.selectedItemPosition == 1 &&
             (apiKey.text.toString().isBlank() || folderId.text.toString().isBlank())) {
             status.text = "Укажите Yandex Cloud API-ключ и Folder ID. Или выберите локальный переводчик."
@@ -163,6 +219,13 @@ class MainActivity : Activity() {
     @Deprecated("Uses Activity callback for compatibility with API 29")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == 104) {
+            if (resultCode == RESULT_OK && data != null) {
+                VotAccount.set(data.getStringExtra("token").orEmpty(), data.getLongExtra("expires", 0L), data.getStringExtra("username").orEmpty())
+                accountStatus.text = "Яндекс VOT: ${VotAccount.username()} · сеанс в памяти"
+            } else accountStatus.text = "Яндекс VOT: вход отменён или не завершён"
+            return
+        }
         if (requestCode != PROJECTION_REQUEST) return
         if (resultCode != RESULT_OK || data == null) {
             status.text = "Доступ к системному аудио не предоставлен"
@@ -174,6 +237,7 @@ class MainActivity : Activity() {
             putExtra("projectionData", data)
             putExtra("lang", selectedModel().code)
             putExtra("outputMode", OutputMode.entries[modeSelector.selectedItemPosition].name)
+            putExtra("voiceEndpoint", if (cloneEnabled.isChecked) cloneAddress.text.toString() else "")
             putExtra("translationEngine", if (translatorSelector.selectedItemPosition == 1) "yandex-cloud" else "local")
             if (translatorSelector.selectedItemPosition == 1) {
                 putExtra("yandexApiKey", apiKey.text.toString())

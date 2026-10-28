@@ -11,7 +11,7 @@
     <application
         android:label="VoiceDub"
         android:theme="@android:style/Theme.Material.Light.NoActionBar"
-        android:usesCleartextTraffic="false">
+        android:networkSecurityConfig="@xml/network_security_config">
         <activity
             android:name=".MainActivity"
             android:exported="true">
@@ -21,6 +21,7 @@
             </intent-filter>
         </activity>
         <activity android:name=".BrowserActivity" android:exported="false" />
+        <activity android:name=".YandexAuthActivity" android:exported="false" android:process=":yandexauth" />
         <service
             android:name=".AudioCaptureService"
             android:exported="false"

@@ -1,5 +1,11 @@
-# VOT 1.12.3 integration status
+# VOT — состояние интеграции 0.5
 
-The user supplied vot.user.js, SHA-256 0a18fd7d08302e3f340d8cbcce4caef604681dbcb334f1b3d42aa913c3b4652c, MIT-licensed. It uses Yandex OAuth authorization code with PKCE, state, and oauth.yandex.ru/verification_code. Its OAuth token is supplied only for lively-voice requests; translation additionally requires VOT session and protobuf requests, processing and playback synchronization. A login alone is not translation.
+Исходная ссылка — пользовательский `vot.user.js` версии 1.12.3, SHA-256 `0a18fd7d08302e3f340d8cbcce4caef604681dbcb334f1b3d42aa913c3b4652c`. OAuth client ID и redirect URI взяты из его открытой реализации. Используется authorization code + PKCE S256 и одноразовая проверка state.
 
-VotAuthAttempt implements and unit-tests local PKCE and strict one-use callback validation; it is not wired to a UI, token exchange or VOT. No credentials are collected. Do not inject privileged userscript APIs into untrusted pages. Remaining: design Android-compatible callback for the existing third-party OAuth client and validate access/redirect; implement isolated token handling, session protocol, request/response and synced media; obtain user consent and test on an actual device. Existing local mode remains available.
+Реализованы `YandexAuthActivity` в отдельном процессе, ограничение HTTPS-сайтов входа, обмен кода на токен и запрос login профиля. Токен остаётся в памяти главного процесса. Вход проверяется пользователем на своём устройстве; действующих учётных данных в среде разработки нет.
+
+`VotEngine` загружает только локальный bundle @vot.js/core 3.2.0. У видеостраницы нет native bridge. Native-транспорт разрешает лишь `api.browser.yandex.ru/session/create` и `/video-translation/translate`, без редиректов; OAuth добавляется только к переводу с живыми голосами. Нет загрузки исходного PCM в VOT, сторонних прокси, telemetry или обхода DRM.
+
+BrowserActivity запрашивает перевод текущего YouTube/Vimeo видео, ограниченно опрашивает WAITING, отклоняет устаревшие результаты после смены плеера и подключает полученный HTTPS URL к синхронизации дорожки. Стандартный локальный перевод останавливается только после получения дорожки VOT. Для аудио требуется явный жест внутри страницы.
+
+Подтверждены тесты PKCE, политики сети, инициализация bundle в Android WebView и корректная обработка отказа в mock-тесте. Живое получение аудио и вход с аккаунтом НЕ ПРОВЕРЕНЫ. Реальный анонимный запрос к Яндексу из среды разработки завершился ошибкой; причина не установлена. Не объявлять VOT работающим на основании сборки и загрузки JS.

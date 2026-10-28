@@ -1,3 +1,17 @@
-# VoiceDub Android — continuation 2026-10-28
+# Продолжение VoiceDub — 28 октября 2026
 
-Source v0.4.1-alpha imported into GiVscSon/VoiceDub-Android. Fixed obsolete SDK tools installation in CI and ML Kit DownloadConditions import. Build and JUnit succeeded on commit 1f2552fe76750c42c3c36c20b7c075df8fcb7a85: https://github.com/GiVscSon/VoiceDub-Android/actions/runs/40608470662 . APK artifact VoiceDub-debug-apk; APK SHA-256 604c26fb12a3a1883c548a7d38173df1bc3093073a9de6492b61f2cacf11188c. Browser JS tests 18 passed; project preflight passed. APK ZIP integrity passed. No device or emulator available; MediaProjection, nonzero PCM, Vosk, ML Kit, Russian TTS, captions, WebView, tablet and phone behavior are not validated. Yandex Cloud and VOT not validated. Next: install APK on Android device, run capture of permitted audio and trace each stage; test portrait, landscape, fullscreen, pause, seek, source change; diagnose logs and fix regressions. Do not infer functionality from compilation.
+Цель: Android-перевод видео, субтитры, русский голос и сохранение особенностей исходного голоса, телефон/планшет. Отдельный репозиторий GiVscSon/VoiceDub-Android. Исходная рабочая 0.4 подтверждена пользователем.
+
+Текущая версия 0.5.0-preview, код проверен на e29c728093d5f2e2ed6ad421940179a53c17a43d. applicationId com.voicedub.app.preview позволяет устанавливать рядом с 0.4. Public debug keystore постоянный. Исходные токены/ключи отсутствуют.
+
+Реализованы PCM-образец в памяти, HTTP-сервер MOSS на ПК, клиент/очередь/MediaPlayer с TTS fallback, сброс ASR и голоса при смене playback epoch; экран OAuth Яндекса в отдельном процессе, PKCE и session-only token; изолированный @vot.js/core 3.2.0 engine и запрос дорожки YouTube/Vimeo с подключением к browser_dubbing.js. VOT живьём не подтверждён.
+
+Доказательства: Android build 40613534989 — success; model + Android integration 40613533961 — success. JUnit 12, JS 19, Python 5; Pixel 2 и Pixel C Android 15 — по 3 instrumented tests без пропусков. Модель через HTTP действительно генерировала WAV, но Android-клиент в CI проверялся с фиксированной дорожкой, полученной моделью. Захват, Vosk/ML Kit и живой голос на устройстве пользователя в этом наборе не тестировались. Полный отчёт RELEASE-0.5.0.md.
+
+Следующие проверяемые шаги:
+1. Установить preview рядом с 0.4; скачать модель в preview; проверить прежний локальный перевод.
+2. Запустить companion на реальном Windows ПК и проверить режим MOSS с телефона в общей сети; снять задержку и оценить голос. Windows bootstrap не запускался в Windows.
+3. Войти в Яндекс через новый экран; проверить результат запроса VOT и реальное аудио на разрешённом видео. Ошибка прямого запроса из среды разработки ещё не диагностирована; не обещать VOT.
+4. Проверить pause/seek/source change и очистку образца на реальном видео, фон, fullscreen и планшет. Для нескольких говорящих нужен отдельный модуль разделения/идентификации; не считать энергофильтр диаризацией.
+
+Команды воспроизведения в README. Сервер: python companion/voice_server.py --moss-dir PATH --host 0.0.0.0 --port 8765. Подробности Windows в companion/README-RU.md. Не смешивать проекты LOWTOWN/LocalPilot/VoiceDub.

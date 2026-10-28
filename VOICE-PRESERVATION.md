@@ -1,14 +1,11 @@
-# Experimental voice preservation
+# Сохранение особенностей голоса — 0.5
 
-MOSS-TTS-Nano is a candidate for Russian synthesis using a reference voice. The upstream ONNX CLI supports direct reference WAV and has an Android demo with pre-tokenized examples; neither the Android live pipeline nor cloned voice quality has been validated in VoiceDub.
+Встроена цепочка: PCM исходного видео → буфер 3–8 секунд → русский перевод → HTTP-сервер MOSS на ПК → WAV → Android MediaPlayer. Выбор режима и адрес сервера находятся на главном экране. Без флажка образец на сервер не отправляется. Только режимы «Голос»/«Оба» используют сервер.
 
-To benchmark on a PC after installing the upstream project and its ONNX dependencies:
-`python scripts/benchmark_moss_voice.py --moss-dir PATH_TO_MOSS_TTS_NANO --reference REFERENCE.wav --text "Привет, это проверка перевода." --output OUTPUT.wav`
+Образец хранится в памяти Android до сброса сеанса/плеера. Сервер использует временный файл на время запроса и не ведёт базу голосов; временный файл удаляется при обычном завершении запроса. Энергетический порог не является распознаванием диктора: музыка и несколько людей могут ухудшить результат. Сгенерированные фразы временно лежат в закрытом Android cache и удаляются по завершении воспроизведения/остановке.
 
-On first inference upstream may download model weights. The reported real-time factor includes model startup and is not streaming latency. Run only with an authorized voice reference. This is an offline one-shot benchmark, not an Android feature, source separation, speaker tracking, or live dubbing. Voice references and generated audio remain at user-chosen paths and are never committed.
+Сервер загружает OnnxTtsRuntime один раз и обрабатывает по одному запросу; вместо накопления старой речи возвращает 429 при перегрузке. Android ограничивает очередь, отменяет устаревшие результаты и сообщает о переходе на обычный TTS при ошибке. Публичный HTTP не разрешён клиентом: для HTTP нужен явный частный IPv4, для внешнего сервера — HTTPS. При публикации сервера нужна отдельная защита; комплект рассчитан на домашнюю сеть и по умолчанию слушает loopback.
 
-Next validate Russian intelligibility, speaker similarity, CPU throughput and memory on target PC, then assess Android tokenizer, live segmentation, model distribution and end-to-end latency. Local/Yandex modes remain independent.
+Настоящая модель проверена через HTTP в CI, два запроса на одном экземпляре. На проверенном запуске: загрузка 9.393 с; синтез 10.842 с для 4.72 с аудио и 11.789 с для 5.76 с. Это CPU GitHub runner, не пользовательский ПК/телефон; подобие голоса и разборчивость не оценены. Модель не встроена в Android для автономного запуска. Нет разделения дикторов/музыки и точной синхронизации по губам.
 
-## Actual CPU experiment 2026-10-28
-
-GitHub Actions run https://github.com/GiVscSon/VoiceDub-Android/actions/runs/40610886055 completed real MOSS ONNX inference using upstream sample en_2.wav and Russian test text. Reference 7.875 s, generated 4.4 s, elapsed 22.995 s including cold startup and model download, real-time factor including load 5.226. Artifact is stereo 48 kHz WAV. This does not measure steady-state speed or similarity, nor prove intelligibility, Android performance, speaker separation, or live dubbing. Test harness unit tests passed with a fake synthesizer. Android release remains without this model.
+[Установка сервера](companion/README-RU.md), [полный отчёт](RELEASE-0.5.0.md). Старый однократный benchmark остаётся в `scripts/benchmark_moss_voice.py`; текущая проверка постоянного сервера — `scripts/smoke_voice_server_real.py`.

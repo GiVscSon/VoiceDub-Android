@@ -42,12 +42,22 @@ jobs:
       - name: Verify APK signature and package
         run: |
           "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs app/build/outputs/apk/debug/app-debug.apk
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging app/build/outputs/apk/debug/app-debug.apk > apk-badging.txt
+          python3 -c 'assert "com.voicedub.app.preview" in open("apk-badging.txt").read()'
           sha256sum app/build/outputs/apk/debug/app-debug.apk
+      - name: Package PC voice server
+        run: python3 -c 'import pathlib,zipfile; z=zipfile.ZipFile("VoiceDub-PC-server-v0.5.0.zip","w",zipfile.ZIP_DEFLATED); [z.write(p,p.name) for p in pathlib.Path("companion").iterdir() if p.is_file()]; z.close()'
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: VoiceDub-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+      - name: Upload PC server kit
+        uses: actions/upload-artifact@v4
+        with:
+          name: VoiceDub-PC-server
+          path: VoiceDub-PC-server-v0.5.0.zip
           if-no-files-found: error
       - name: Upload test report
         if: always()

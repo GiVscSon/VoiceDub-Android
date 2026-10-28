@@ -52,6 +52,7 @@ class BrowserActivity : Activity() {
     private var videoPlayerKey = ""
     private var videoDuration = 0.0
     private var votJob: String? = null
+    private val dubHandoff = DubHandoffGate()
     private var votAttempts = 0
     private var votRetry: Runnable? = null
 
@@ -127,6 +128,12 @@ class BrowserActivity : Activity() {
                         label.text = "HTML5-плеер пока не обнаружен (iframe/DRM могут ограничивать доступ)"
                     }
                     val dubbing = result.optJSONObject("dubbing")
+                    // Attaching a VOT URL does not mean that Android WebView can play it.
+                    // Preserve the local translator until an actual audio playback event.
+                    if (dubHandoff.onState(dubbing?.optString("state"))) {
+                        stopService(Intent(this@BrowserActivity, AudioCaptureService::class.java))
+                        votLabel.text = "VOT: русская дорожка воспроизводится; локальная озвучка остановлена"
+                    }
                     dubLabel.text = if (dubbing?.optBoolean("attached") == true) {
                         val drift = dubbing.optDouble("driftSeconds", 0.0)
                         "Озвучка: ${dubbing.optString("state")} · рассинхронизация ${"%.2f".format(java.util.Locale.US, drift)} с"
@@ -288,7 +295,7 @@ class BrowserActivity : Activity() {
             if (android.net.Uri.parse(url).scheme != "https") {
                 votLabel.text = "VOT вернул неподдерживаемую дорожку"; cancelVot(); return
             }
-            stopService(Intent(this, AudioCaptureService::class.java))
+            // Do not stop live subtitles/TTS yet: audio must start after a user gesture.
             dubUrl.setText(url)
             attachDubbing()
             cancelVot()

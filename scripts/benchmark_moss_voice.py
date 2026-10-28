@@ -32,7 +32,7 @@ def run(moss_dir, reference, text, output, timeout=600):
     reference_seconds = wav_duration(reference)
     output.parent.mkdir(parents=True, exist_ok=True)
     # A private temporary output prevents stale success or partial writes replacing a prior result.
-    with tempfile.TemporaryDirectory(prefix="voicedub-moss-") as tmp:
+    with tempfile.TemporaryDirectory(prefix=".voicedub-moss-", dir=str(output.parent)) as tmp:
         generated = Path(tmp) / "generated.wav"
         cmd = [sys.executable, str(entry), "--execution-provider", "cpu",
                "--prompt-audio-path", str(reference), "--text", text,

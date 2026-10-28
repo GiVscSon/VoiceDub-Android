@@ -24,6 +24,7 @@ jobs:
         run: python3 -m unittest discover -s tests -p 'test_*.py' -v
       - name: Browser module checks
         run: |
+          node --check app/src/main/assets/vot_engine.js
           node --check app/src/main/assets/browser_probe.js
           node --check app/src/main/assets/browser_dubbing.js
           node --check app/src/main/assets/browser_captions.js

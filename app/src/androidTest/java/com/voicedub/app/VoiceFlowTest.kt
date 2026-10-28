@@ -19,6 +19,20 @@ import java.util.concurrent.TimeUnit
 
 @RunWith(AndroidJUnit4::class)
 class VoiceFlowTest {
+    @Test fun isolatedVotEngineLoadsLocalBundle() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        var engine: VotEngine? = null
+        instrumentation.runOnMainSync { engine = VotEngine(instrumentation.targetContext) { _, _ -> } }
+        try {
+            var ready = false
+            val deadline = System.currentTimeMillis() + 20000
+            while (!ready && System.currentTimeMillis() < deadline) {
+                instrumentation.runOnMainSync { ready = engine!!.isReady }
+                if (!ready) Thread.sleep(100)
+            }
+            assertTrue("Local VOT bundle failed to initialize", ready)
+        } finally { instrumentation.runOnMainSync { engine?.close() } }
+    }
     @Test fun screenWorksInPortraitAndLandscapeAndCloneNeedsOptIn() {
         ActivityScenario.launch(MainActivity::class.java).use { scenario ->
             scenario.onActivity { activity ->
@@ -53,17 +67,19 @@ class VoiceFlowTest {
             val file = File.createTempFile("instrumentation-", ".wav", instrumentation.targetContext.cacheDir)
             file.writeBytes(audio)
             val done = CountDownLatch(1)
+            val playbackFailed = java.util.concurrent.atomic.AtomicBoolean(false)
             val player = MediaPlayer()
             try {
                 player.setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY)
                     .setAllowedCapturePolicy(AudioAttributes.ALLOW_CAPTURE_BY_NONE).build())
                 player.setDataSource(file.absolutePath)
                 player.setOnCompletionListener { done.countDown() }
-                player.setOnErrorListener { _, _, _ -> done.countDown(); false }
+                player.setOnErrorListener { _, _, _ -> playbackFailed.set(true); done.countDown(); true }
                 player.prepare()
                 assertTrue(player.duration > 0)
                 player.start()
                 assertTrue("WAV playback timed out", done.await(45, TimeUnit.SECONDS))
+                assertFalse("MediaPlayer reported an audio error", playbackFailed.get())
             } finally { player.release(); file.delete() }
         } finally { client.close() }
     }

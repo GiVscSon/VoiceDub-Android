@@ -7,3 +7,4 @@ companion/.venv/
 companion/MOSS-TTS-Nano/
 *.wav
 experiment-results/
+node_modules/

@@ -46,6 +46,14 @@ class BrowserActivity : Activity() {
     private var latestSession = -1L
     private var latestSequence = -1L
     private var lastBrowserState = ""
+    private lateinit var votLabel: TextView
+    private lateinit var vot: VotEngine
+    private var videoIdentity = ""
+    private var videoPlayerKey = ""
+    private var videoDuration = 0.0
+    private var votJob: String? = null
+    private var votAttempts = 0
+    private var votRetry: Runnable? = null
 
     private fun publishPlayback(found: Boolean, paused: Boolean, seeking: Boolean, key: String) {
         val signature = "$found|$paused|$seeking|$key"
@@ -96,6 +104,12 @@ class BrowserActivity : Activity() {
                     val result = JSONObject(json)
                     val data = result.getJSONObject("player")
                     val found = data.optBoolean("found")
+                    val identity = if (found) data.optString("videoId") else ""
+                    val playerKey = if (found) data.optString("playerKey") else ""
+                    if (identity != videoIdentity || playerKey != videoPlayerKey) cancelVot()
+                    videoIdentity = identity
+                    videoPlayerKey = playerKey
+                    videoDuration = data.optDouble("duration", 0.0)
                     publishPlayback(
                         found = found,
                         paused = data.optBoolean("paused", true) || data.optBoolean("ended", false),
@@ -166,6 +180,21 @@ class BrowserActivity : Activity() {
             setPadding(12, 8, 12, 8)
         }
         content.addView(label)
+        votLabel = TextView(this).apply { text = "VOT: экспериментальный перевод текущего видео"; textSize = 12f }
+        content.addView(votLabel)
+        content.addView(Button(this).apply {
+            text = "Перевести видео · Яндекс VOT (эксперимент)"
+            setOnClickListener {
+                if (VotPolicy.video(videoIdentity) == null) {
+                    votLabel.text = "VOT: сначала откройте видимый HTML5-плеер YouTube или Vimeo"
+                } else {
+                    cancelVot()
+                    votAttempts = 0
+                    votJob = android.os.SystemClock.elapsedRealtimeNanos().toString()
+                    requestVot()
+                }
+            }
+        })
         dubUrl = EditText(this).apply {
             setSingleLine(true)
             hint = "HTTPS-ссылка на готовую русскую аудиодорожку (MP3/M4A)"
@@ -201,6 +230,8 @@ class BrowserActivity : Activity() {
         web.webViewClient = object : WebViewClient() {
             override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
                 super.onPageStarted(view, url, favicon)
+                cancelVot()
+                videoIdentity = ""
                 dubLabel.text = "Страница изменилась: предыдущая дорожка отключена"
                 publishPlayback(false, true, false, "")
             }
@@ -231,7 +262,49 @@ class BrowserActivity : Activity() {
         }
         content.addView(web, LinearLayout.LayoutParams(-1, 0, 1f))
         setContentView(root)
+        vot = VotEngine(this) { job, result -> receiveVot(job, result) }
         web.loadUrl("https://www.youtube.com")
+    }
+
+    private fun requestVot() {
+        val job = votJob ?: return
+        if (!visible) { cancelVot(); return }
+        if (++votAttempts > 20) { votLabel.text = "VOT: время ожидания истекло"; cancelVot(); return }
+        val language = getSharedPreferences("settings", MODE_PRIVATE).getString("sourceLanguage", "en") ?: "en"
+        if (!vot.translate(job, videoIdentity, videoDuration, language)) {
+            votLabel.text = "VOT ещё загружается. Повторите через несколько секунд."
+            cancelVot()
+        } else votLabel.text = "VOT: запрос перевода${if (VotAccount.accessToken() != null) " с авторизацией Яндекса" else " без входа"}…"
+    }
+
+    private fun receiveVot(job: String, result: JSONObject) {
+        if (job != votJob || !visible) return
+        if (!result.optBoolean("ok")) {
+            votLabel.text = "VOT не вернул перевод. Проверьте доступ к Яндексу и вход; локальный перевод доступен отдельно."
+            cancelVot(); return
+        }
+        if (result.optBoolean("translated")) {
+            val url = result.optString("url")
+            if (android.net.Uri.parse(url).scheme != "https") {
+                votLabel.text = "VOT вернул неподдерживаемую дорожку"; cancelVot(); return
+            }
+            stopService(Intent(this, AudioCaptureService::class.java))
+            dubUrl.setText(url)
+            attachDubbing()
+            cancelVot()
+        } else if (result.optInt("status") in listOf(2, 3)) {
+            votLabel.text = "VOT готовит перевод. Проверяю через 15 секунд…"
+            votRetry = Runnable { requestVot() }.also { ui.postDelayed(it, 15000) }
+        } else {
+            votLabel.text = "VOT запросил дополнительные данные; загрузка исходного аудио не поддерживается"
+            cancelVot()
+        }
+    }
+
+    private fun cancelVot() {
+        votJob = null
+        votRetry?.let { ui.removeCallbacks(it) }
+        votRetry = null
     }
 
     private fun attachDubbing() {
@@ -293,10 +366,12 @@ class BrowserActivity : Activity() {
         super.onStop()
     }
     override fun onResume() { super.onResume(); visible = true; ui.removeCallbacks(poll); ui.post(poll); web.onResume() }
-    override fun onPause() { publishPlayback(false, true, false, ""); visible = false; ui.removeCallbacks(poll); ui.removeCallbacks(clearFullscreenCaption); fullscreenCaptions.visibility = View.GONE; web.onPause(); super.onPause() }
+    override fun onPause() { cancelVot(); publishPlayback(false, true, false, ""); visible = false; ui.removeCallbacks(poll); ui.removeCallbacks(clearFullscreenCaption); fullscreenCaptions.visibility = View.GONE; web.onPause(); super.onPause() }
     override fun onBackPressed() { if (fullScreenView != null) exitFullscreen() else if (web.canGoBack()) web.goBack() else super.onBackPressed() }
     override fun onDestroy() {
         visible = false
+        cancelVot()
+        if (::vot.isInitialized) vot.close()
         publishPlayback(false, true, false, "")
         ui.removeCallbacks(poll)
         exitFullscreen()

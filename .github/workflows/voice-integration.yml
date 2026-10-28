@@ -41,6 +41,10 @@ jobs:
     needs: model-http
     runs-on: ubuntu-latest
     timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [pixel_2, pixel_c]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -69,7 +73,7 @@ jobs:
         with:
           api-level: 35
           arch: x86_64
-          profile: pixel_2
+          profile: ${{ matrix.profile }}
           target: google_apis
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -memory 2048
@@ -77,7 +81,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: android-emulator-results
+          name: android-emulator-results-${{ matrix.profile }}
           path: |
             app/build/reports/androidTests/
             app/build/outputs/androidTest-results/

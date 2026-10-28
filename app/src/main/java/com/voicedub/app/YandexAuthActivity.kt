@@ -29,6 +29,10 @@ object VotAccount {
         return if (token.isEmpty()) "вход не выполнен" else login.ifBlank { "аккаунт подключён" }
     }
     @Synchronized fun clear() { token = ""; expires = 0L; login = "" }
+    @Synchronized fun accessToken(): String? {
+        if (expires <= System.currentTimeMillis()) clear()
+        return token.takeIf { it.isNotEmpty() }
+    }
 }
 
 /** Dedicated process and WebView storage, without browser probes, JS bridges or credential interception. */
@@ -51,7 +55,7 @@ class YandexAuthActivity : Activity() {
         attempt = VotAuthAttempt.create()
         val layout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         message = TextView(this).apply {
-            text = "Вход через публичный OAuth-клиент VOT из присланного скрипта. Пароль вводится только на странице Яндекса. Токен останется в памяти VoiceDub; озвучка VOT пока не подключена."
+            text = "Вход через публичный OAuth-клиент VOT из присланного скрипта. Пароль вводится только на странице Яндекса. Токен останется в памяти VoiceDub и используется только в прямых запросах VOT к Яндексу."
             setPadding(18, 12, 18, 12)
         }
         layout.addView(message)

@@ -1,0 +1,14 @@
+{
+  "name": "voicedub-vot-runtime",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@vot.js/core": "3.2.0"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.0"
+  },
+  "scripts": {
+    "build": "esbuild engine.js --bundle --format=iife --target=chrome90 --outfile=../app/src/main/assets/vot_engine.js --external:node:crypto"
+  }
+}

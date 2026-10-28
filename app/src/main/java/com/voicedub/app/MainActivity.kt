@@ -97,7 +97,7 @@ class MainActivity : Activity() {
             VotAccount.clear()
             accountStatus.text = "Яндекс VOT: сеанс завершён"
         })
-        content.addView(paragraph("Вход VOT не заменяет ML Kit и не предоставляет доступ к Yandex Cloud Translate. Получение аудиодорожки VOT ещё не подключено."))
+        content.addView(paragraph("Вход VOT не заменяет ML Kit и не предоставляет доступ к Yandex Cloud Translate. Запрос дорожки VOT — отдельная кнопка во встроенном браузере для YouTube/Vimeo; доступность сервиса не гарантируется."))
         cloneEnabled = CheckBox(this).apply {
             text = "Сохранять особенности исходного голоса · сервер MOSS на моём ПК"
             isChecked = false
@@ -130,6 +130,7 @@ class MainActivity : Activity() {
             }, "voice-health").start()
         })
         content.addView(btn("Открыть встроенный браузер (экспериментально)") {
+            getSharedPreferences("settings", MODE_PRIVATE).edit().putString("sourceLanguage", selectedModel().code).apply()
             startActivity(Intent(this, BrowserActivity::class.java))
         })
         content.addView(paragraph("Для обычного Chrome, Opera и других браузеров используйте захват системного аудио. Во встроенном браузере дополнительно показывается обнаружение видеоплеера и его состояние."))

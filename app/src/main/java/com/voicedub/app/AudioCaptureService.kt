@@ -367,8 +367,11 @@ class AudioCaptureService : Service() {
                         player.setDataSource(file.absolutePath)
                         player.setOnCompletionListener { finishUtterance(id) }
                         player.setOnErrorListener { _, _, _ ->
-                            releaseClonedAudio(); showStatus("Ошибка аудио MOSS · обычный русский голос")
-                            speakSystem(segment.text, id); true
+                            if (activeUtterance == id) {
+                                releaseClonedAudio(); showStatus("Ошибка аудио MOSS · обычный русский голос")
+                                speakSystem(segment.text, id)
+                            }
+                            true
                         }
                         player.setOnPreparedListener {
                             if (activeUtterance == id && recording.get()) {

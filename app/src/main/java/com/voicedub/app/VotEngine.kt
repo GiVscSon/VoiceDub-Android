@@ -17,6 +17,7 @@ import java.net.URL
 import java.util.concurrent.Executors
 
 /** No network capability is exposed to the site's WebView. This engine loads local code only. */
+@Suppress("SetJavaScriptEnabled")
 class VotEngine(context: Context, private val onResult: (String, JSONObject) -> Unit) {
     private val ui = Handler(Looper.getMainLooper())
     private val executor = Executors.newSingleThreadExecutor()
@@ -28,7 +29,6 @@ class VotEngine(context: Context, private val onResult: (String, JSONObject) -> 
     private var loaded = false
     private var lively = false
 
-    @Suppress("SetJavaScriptEnabled")
     init {
         web.settings.javaScriptEnabled = true
         web.settings.allowFileAccess = false

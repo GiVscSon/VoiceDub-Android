@@ -1,0 +1,3 @@
+# VoiceDub Android
+
+Project initialization.

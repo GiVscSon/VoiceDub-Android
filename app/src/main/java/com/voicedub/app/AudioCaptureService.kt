@@ -17,6 +17,7 @@ import android.os.IBinder
 import android.os.Looper
 import android.os.SystemClock
 import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
 import org.json.JSONObject
 import org.vosk.Model
 import org.vosk.Recognizer
@@ -51,6 +52,9 @@ class AudioCaptureService : Service() {
     private var audioRecord: AudioRecord? = null
     private var tts: TextToSpeech? = null
     private var ttsReady = false
+    private val speechQueue = ArrayDeque<String>()
+    private var activeUtterance: String? = null
+    private var utteranceCounter = 0L
     private var overlay: FloatingStatus? = null
     private var outputMode = OutputMode.BOTH
     private var lastSpoken = ""
@@ -70,7 +74,7 @@ class AudioCaptureService : Service() {
             if (decision.cancelQueuedSpeech) {
                 translationEpoch++
                 pendingTexts.clear()
-                tts?.stop()
+                clearSpeechQueue()
                 lastSpoken = ""
             }
         }
@@ -103,6 +107,13 @@ class AudioCaptureService : Service() {
                         .setAllowedCapturePolicy(AudioAttributes.ALLOW_CAPTURE_BY_NONE)
                         .build()
                 )
+                tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                    override fun onStart(utteranceId: String?) = Unit
+                    override fun onDone(utteranceId: String?) { main.post { finishUtterance(utteranceId) } }
+                    @Deprecated("Deprecated in Android")
+                    override fun onError(utteranceId: String?) { main.post { finishUtterance(utteranceId) } }
+                    override fun onError(utteranceId: String?, errorCode: Int) { main.post { finishUtterance(utteranceId) } }
+                })
                 ttsReady = languageStatus != TextToSpeech.LANG_MISSING_DATA &&
                     languageStatus != TextToSpeech.LANG_NOT_SUPPORTED
             }
@@ -292,13 +303,44 @@ class AudioCaptureService : Service() {
                 }
                 if (outputMode != OutputMode.SUBTITLES) {
                     if (ttsReady) {
-                        // Bound pending audio: do not read minutes behind a live video.
-                        tts?.speak(translated, TextToSpeech.QUEUE_FLUSH, null, "dub-${SystemClock.elapsedRealtime()}")
+                        enqueueSpeech(translated)
                     } else showStatus("Переведено, но русский голос TTS недоступен")
                 }
             }.onFailure { error -> showStatus("Ошибка перевода: ${error.message}") }
             translateNext()
         } }
+    }
+
+    /** Keep the current utterance intact; bound waiting speech to limit live lag. */
+    private fun enqueueSpeech(text: String) {
+        if (text.isBlank()) return
+        if (speechQueue.size >= 2) speechQueue.removeFirst()
+        speechQueue.addLast(text)
+        speakNext()
+    }
+
+    private fun speakNext() {
+        if (!recording.get() || !ttsReady || activeUtterance != null || speechQueue.isEmpty() || !playbackGate.allowsSpeech()) return
+        val id = "dub-${++utteranceCounter}"
+        activeUtterance = id
+        val result = tts?.speak(speechQueue.removeFirst(), TextToSpeech.QUEUE_ADD, null, id)
+        if (result != TextToSpeech.SUCCESS) {
+            activeUtterance = null
+            showStatus("Не удалось запустить русскую озвучку")
+            speechQueue.clear()
+        }
+    }
+
+    private fun finishUtterance(id: String?) {
+        if (id == null || activeUtterance != id) return
+        activeUtterance = null
+        speakNext()
+    }
+
+    private fun clearSpeechQueue() {
+        speechQueue.clear()
+        activeUtterance = null
+        tts?.stop()
     }
 
     private fun startLocalFallback(text: String, cause: String) {
@@ -344,7 +386,7 @@ class AudioCaptureService : Service() {
         }
         try { projection?.stop() } catch (_: Exception) {}
         translator?.close()
-        tts?.stop()
+        clearSpeechQueue()
         tts?.shutdown()
         overlay?.hide()
         super.onDestroy()

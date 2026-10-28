@@ -3346,6 +3346,7 @@
         const data = await res.arrayBuffer();
         return {
           success: res.status === 200,
+          httpStatus: res.status,
           data
         };
       } catch (err) {
@@ -3899,8 +3900,17 @@
         shouldSendFailedAudio: false
       });
       VotNative.result(request.job, JSON.stringify({ ok: true, ...result }));
-    } catch (_) {
-      VotNative.result(request.job, JSON.stringify({ ok: false, error: "vot-request-failed" }));
+    } catch (error) {
+      // Only fixed categories and HTTP status leave this isolated runtime.
+      // Never forward server bodies, URLs, credentials or exception text to the page.
+      const status = Number(error?.data?.httpStatus) || 0;
+      const authRequired = error?.data?.status === 7;
+      const stage = error?.message === "Failed to request create session" ? "session" :
+        error?.message === "Failed to request video translation" ? "translate" : "service";
+      const kind = authRequired ? "auth_required" : status === 401 || status === 403 ? "http_auth" :
+        status === 429 ? "rate_limit" : status >= 500 ? "server" : status ? "http" :
+        error?.data?.success === false ? "network" : "service";
+      VotNative.result(request.job, JSON.stringify({ ok: false, error: kind, stage, httpStatus: status }));
     }
   };
   VotNative.ready();

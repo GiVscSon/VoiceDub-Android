@@ -287,7 +287,22 @@ class BrowserActivity : Activity() {
     private fun receiveVot(job: String, result: JSONObject) {
         if (job != votJob || !visible) return
         if (!result.optBoolean("ok")) {
-            votLabel.text = "VOT не вернул перевод. Проверьте доступ к Яндексу и вход; локальный перевод доступен отдельно."
+            val stage = when (result.optString("stage")) {
+                "session" -> "создание сессии"
+                "translate" -> "запрос перевода"
+                else -> "ответ сервиса"
+            }
+            val status = result.optInt("httpStatus").takeIf { it in 100..599 }
+            val reason = when (result.optString("error")) {
+                "auth_required" -> "Яндекс запросил авторизацию"
+                "http_auth" -> "сервис отказал в доступе"
+                "rate_limit" -> "слишком много запросов, попробуйте позже"
+                "server" -> "ошибка сервиса Яндекса, попробуйте позже"
+                "network" -> "нет ответа от сервиса: проверьте соединение"
+                "http" -> "ошибка HTTP"
+                else -> "сервис не вернул дорожку"
+            }
+            votLabel.text = "VOT: $reason ($stage${status?.let { ", HTTP $it" } ?: ""}). Локальный перевод доступен."
             cancelVot(); return
         }
         if (result.optBoolean("translated")) {

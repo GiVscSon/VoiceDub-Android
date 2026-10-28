@@ -31,5 +31,30 @@ test('bundled VOT initializes and reports denied transport without fabricating a
   assert.equal(requests[0].headers.Authorization, undefined);
   assert.equal(output.id, 'one');
   assert.equal(output.ok, false);
+  assert.equal(output.error, 'server');
+  assert.equal(output.stage, 'session');
+  assert.equal(output.httpStatus, 503);
   assert.equal(output.url, undefined);
+});
+
+test('VOT diagnostics report only fixed categories and never response bodies', async () => {
+  for (const [status, expected] of [[0, 'network'], [401, 'http_auth'], [403, 'http_auth'], [429, 'rate_limit'], [404, 'http']]) {
+    let output, context;
+    context = vm.createContext({
+      window: {crypto:webcrypto}, crypto:webcrypto, Blob, Headers, Response, TextEncoder, TextDecoder,
+      URL, Uint8Array, ArrayBuffer, console, setTimeout, clearTimeout,
+      btoa: s => Buffer.from(s, 'binary').toString('base64'),
+      atob: s => Buffer.from(s, 'base64').toString('binary'),
+      VotNative: {
+        ready() {},
+        request(id) { queueMicrotask(() => context.__votNetworkResult(id, status, Buffer.from('secret-token').toString('base64'))); },
+        result(id, data) { output = JSON.parse(data); }
+      }
+    });
+    vm.runInContext(fs.readFileSync('app/src/main/assets/vot_engine.js', 'utf8'), context);
+    await context.__votTranslate({job:'x', url:'https://youtu.be/abc_def-123', videoId:'abc_def-123', host:'youtube', language:'en', duration:100});
+    assert.equal(output.error, expected);
+    assert.equal(output.httpStatus, status);
+    assert.equal(JSON.stringify(output).includes('secret-token'), false);
+  }
 });

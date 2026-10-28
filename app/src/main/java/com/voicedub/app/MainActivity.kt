@@ -58,6 +58,15 @@ class MainActivity : Activity() {
         content.addView(paragraph("Язык исходного видео:"))
         selector = Spinner(this)
         selector.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, ModelCatalog.entries.map { it.label })
+        val savedLanguage = getSharedPreferences("settings", MODE_PRIVATE).getString("sourceLanguage", "en")
+        selector.setSelection(ModelCatalog.entries.indexOfFirst { it.code == savedLanguage }.coerceAtLeast(0))
+        selector.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, position: Int, id: Long) {
+                getSharedPreferences("settings", MODE_PRIVATE).edit()
+                    .putString("sourceLanguage", ModelCatalog.entries[position].code).apply()
+            }
+            override fun onNothingSelected(parent: android.widget.AdapterView<*>?) = Unit
+        }
         content.addView(selector)
         content.addView(paragraph("Режим перевода:"))
         modeSelector = Spinner(this).apply {

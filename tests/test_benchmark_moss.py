@@ -14,7 +14,7 @@ def wav(path):
         w.setnchannels(1)
         w.setsampwidth(2)
         w.setframerate(16000)
-        w.writeframes(b"\\x01\\x00" * 1600)
+        w.writeframes(bytes([1, 0]) * 1600)
 
 
 class BenchTest(unittest.TestCase):

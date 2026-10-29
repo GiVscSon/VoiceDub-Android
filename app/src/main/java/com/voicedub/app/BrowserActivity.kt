@@ -66,6 +66,8 @@ class BrowserActivity : Activity() {
     private var pickerKey = ""
     private var sourcePreparing = false
     private var votDeadline = 0L
+    private var attachedVotUrl = ""
+    private var attachedVotKey = ""
 
     private fun publishPlayback(found: Boolean, paused: Boolean, seeking: Boolean, key: String) {
         val signature = "$found|$paused|$seeking|$key"
@@ -248,6 +250,7 @@ class BrowserActivity : Activity() {
             text = "Отключить"
             setOnClickListener {
                 web.evaluateJavascript("window.__voicedubDubbing?.detach()", null)
+                attachedVotUrl = ""; attachedVotKey = ""
                 dubLabel.text = "Озвучка отключена"
             }
         })
@@ -310,6 +313,10 @@ class BrowserActivity : Activity() {
         if (!visible) { cancelVot(); return }
         if (++votAttempts > 80 || android.os.SystemClock.elapsedRealtime() > votDeadline) { votLabel.text = "VOT: время ожидания истекло"; cancelVot(); return }
         val language = if (autoVotLanguage.isChecked) "auto" else getSharedPreferences("settings", MODE_PRIVATE).getString("sourceLanguage", "en") ?: "en"
+        if (!VotPolicy.supportsLanguage(language)) {
+            votLabel.text = "Этот исходный язык недоступен в используемом VOT. Включите автоопределение Яндекса или используйте локальный перевод."
+            cancelVot(); return
+        }
         if (!vot.translate(job, videoIdentity, videoDuration, language)) {
             votLabel.text = "VOT ещё загружается. Повторите через несколько секунд."
             cancelVot()
@@ -350,7 +357,7 @@ class BrowserActivity : Activity() {
                 votLabel.text = "VOT вернул неподдерживаемую дорожку"; cancelVot(); return
             }
             // Do not stop live subtitles/TTS yet: audio must start after a user gesture.
-            if (dubUrl.text.toString() != url) { dubUrl.setText(url); attachDubbing() }
+            if (attachedVotUrl != url || attachedVotKey != videoPlayerKey) { dubUrl.setText(url); attachDubbing() }
             if (result.optInt("status") == 5) scheduleVot(result.optInt("remainingTime", 15))
             else cancelVot()
         } else if (result.optInt("status") in listOf(2, 3)) {
@@ -439,10 +446,13 @@ class BrowserActivity : Activity() {
         // Escape user input as a JSON string; never interpolate raw URL into JS code.
         val escaped = JSONObject.quote(media)
         val expression = "window.__voicedubDubbing ? window.__voicedubDubbing.attach({url:$escaped}) : ({ok:false,error:'player-not-ready'})"
+        val key = videoPlayerKey
         web.evaluateJavascript(expression) { json ->
+            if (key != videoPlayerKey || !visible) return@evaluateJavascript
             try {
                 val result = JSONObject(json)
                 dubLabel.text = if (result.optBoolean("ok")) {
+                    attachedVotUrl = media; attachedVotKey = key
                     "Дорожка прикреплена к ${result.optString("videoId")}. Нажмите кнопку ▶ внутри видео для запуска звука."
                 } else "Не удалось подключить дорожку: ${result.optString("error")}."
             } catch (_: Exception) {

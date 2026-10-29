@@ -17,6 +17,12 @@ class VotPolicyTest {
         assertFalse(VotPolicy.allowed("https://api.browser.yandex.ru/session/create", "PUT"))
         assertFalse(VotPolicy.allowed("https://api.browser.yandex.ru/video-translation/fail-audio-js", "PUT"))
     }
+    @Test fun votLanguagesAreIndependentFromTheLocalCatalog() {
+        assertTrue(VotPolicy.supportsLanguage("auto"))
+        assertTrue(VotPolicy.supportsLanguage("ar"))
+        assertFalse(VotPolicy.supportsLanguage("pt-BR"))
+        assertFalse(VotPolicy.supportsLanguage("gu"))
+    }
     @Test fun onlyCanonicalVideoUrls() {
         assertEquals("https://youtu.be/abc_def-123", VotPolicy.video("youtube:abc_def-123")!!.first)
         assertNull(VotPolicy.video("youtube:abc/../../x"))

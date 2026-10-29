@@ -58,7 +58,7 @@ class VotEngine(
     }
 
     fun translate(job: String, videoId: String, duration: Double, language: String): Boolean {
-        if (!isReady || closed) return false
+        if (!isReady || closed || !VotPolicy.supportsLanguage(language)) return false
         val video = VotPolicy.video(videoId) ?: return false
         if (job != activeJob) { cancel(); activeJob = job; lively = VotAccount.accessToken() != null }
         val payload = JSONObject().put("job", job).put("url", video.first).put("videoId", videoId.substringAfter(':'))
@@ -149,6 +149,9 @@ class VotEngine(
 }
 
 object VotPolicy {
+    /** Supported request tags of the pinned @vot.js/shared 3.2.0, independent of Vosk. */
+    fun supportsLanguage(code: String) = code in setOf("auto", "ru", "en", "zh", "ko", "ar", "fr", "it", "es", "de", "ja")
+
     fun allowed(url: String, method: String = "POST"): Boolean = try {
         val u = URI(url)
         u.scheme == "https" && u.host == "api.browser.yandex.ru" && u.userInfo == null &&

@@ -1,7 +1,7 @@
 package com.voicedub.app
 
 /** One route shared by text providers and speech output; never infer it from UI positions. */
-data class TranslationRoute private constructor(val source: String, val target: String) {
+class TranslationRoute private constructor(val source: String, val target: String) {
     val isIdentity get() = source == target
     val supportsMoss get() = TranslationLanguages.supportsMoss(target)
     companion object {

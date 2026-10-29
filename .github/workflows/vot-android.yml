@@ -43,7 +43,6 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -memory 2048
           script: |
             gradle --no-daemon :app:connectedTinyDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.voicedub.app.VotUploadTest,com.voicedub.app.LocalTranslationTest,com.voicedub.app.TinyLanguageTest
-            adb shell run-as com.voicedub.app.preview cat files/tiny-metrics.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:

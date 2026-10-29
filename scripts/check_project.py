@@ -19,6 +19,6 @@ assert service.attrib.get(android+'exported') == 'false'
 for script in ('browser_probe.js','browser_dubbing.js','browser_captions.js'):
     assert (root/'app/src/main/assets'/script).is_file()
 workflow = (root/'.github/workflows/android-debug.yml').read_text()
-assert 'assembleDebug' in workflow and 'upload-artifact' in workflow
+assert ('assembleDebug' in workflow or 'assembleCoreDebug' in workflow) and 'upload-artifact' in workflow
 assert 'test' in workflow
 print('PASS: Manifest XML / permissions / assets / Android workflow')

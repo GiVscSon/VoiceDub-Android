@@ -57,13 +57,13 @@ class VotEngine(
         web.loadDataWithBaseURL("https://voicedub.invalid/", "<html><body></body></html>", "text/html", "UTF-8", null)
     }
 
-    fun translate(job: String, videoId: String, duration: Double, language: String): Boolean {
-        if (!isReady || closed || !VotPolicy.supportsLanguage(language)) return false
+    fun translate(job: String, videoId: String, duration: Double, language: String, target: String = "ru"): Boolean {
+        if (!isReady || closed || !VotPolicy.supportsLanguage(language) || !VotPolicy.supportsTarget(target)) return false
         val video = VotPolicy.video(videoId) ?: return false
         if (job != activeJob) { cancel(); activeJob = job; lively = VotAccount.accessToken() != null }
         val payload = JSONObject().put("job", job).put("url", video.first).put("videoId", videoId.substringAfter(':'))
             .put("host", video.second).put("duration", duration.takeIf { it.isFinite() && it > 0 } ?: 310.0)
-            .put("language", language).put("lively", lively)
+            .put("language", language).put("target", target).put("lively", lively)
         web.evaluateJavascript("window.__votTranslate($payload)", null)
         return true
     }
@@ -150,6 +150,7 @@ class VotEngine(
 
 object VotPolicy {
     /** Supported request tags of the pinned @vot.js/shared 3.2.0, independent of Vosk. */
+    fun supportsTarget(code: String) = code in setOf("ru", "en", "kk")
     fun supportsLanguage(code: String) = code in setOf("auto", "ru", "en", "zh", "ko", "ar", "fr", "it", "es", "de", "ja")
 
     fun allowed(url: String, method: String = "POST"): Boolean = try {

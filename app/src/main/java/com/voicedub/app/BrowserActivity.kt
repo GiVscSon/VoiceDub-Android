@@ -145,7 +145,7 @@ class BrowserActivity : Activity() {
                     // Preserve the local translator until an actual audio playback event.
                     if (dubHandoff.onState(dubbing?.optString("state"))) {
                         stopService(Intent(this@BrowserActivity, AudioCaptureService::class.java))
-                        votLabel.text = "VOT: русская дорожка воспроизводится; локальная озвучка остановлена"
+                        votLabel.text = "VOT: дорожка перевода воспроизводится; локальная озвучка остановлена"
                     }
                     dubLabel.text = if (dubbing?.optBoolean("attached") == true) {
                         val drift = dubbing.optDouble("driftSeconds", 0.0)
@@ -237,7 +237,7 @@ class BrowserActivity : Activity() {
         })
         dubUrl = EditText(this).apply {
             setSingleLine(true)
-            hint = "HTTPS-ссылка на готовую русскую аудиодорожку (MP3/M4A)"
+            hint = "HTTPS-ссылка на готовую аудиодорожку перевода (MP3/M4A)"
             inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_URI
         }
         panel.addView(dubUrl)
@@ -317,7 +317,12 @@ class BrowserActivity : Activity() {
             votLabel.text = "Этот исходный язык недоступен в используемом VOT. Включите автоопределение Яндекса или используйте локальный перевод."
             cancelVot(); return
         }
-        if (!vot.translate(job, videoIdentity, videoDuration, language)) {
+        val target = getSharedPreferences("settings", MODE_PRIVATE).getString("targetLanguage", "ru") ?: "ru"
+        if (!VotPolicy.supportsTarget(target)) {
+            votLabel.text = "Выбранный язык перевода недоступен в VOT. Используйте локальный режим для этого направления."
+            cancelVot(); return
+        }
+        if (!vot.translate(job, videoIdentity, videoDuration, language, target)) {
             votLabel.text = "VOT ещё загружается. Повторите через несколько секунд."
             cancelVot()
         } else votLabel.text = "VOT: запрос перевода${if (VotAccount.accessToken() != null) " с авторизацией Яндекса" else " без входа"}…"

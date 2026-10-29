@@ -1,4 +1,4 @@
-name: VOT Android transport and layout
+name: Android local models and VOT transport
 on:
   pull_request:
     branches: [main]
@@ -23,6 +23,11 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Prepare pinned local model and speech samples
+        run: python3 scripts/fetch_tiny_lid.py --destination app/src/androidTest/assets/lid
       - name: Enable KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
@@ -36,7 +41,9 @@ jobs:
           target: google_apis
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -memory 2048
-          script: gradle --no-daemon :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.voicedub.app.VotUploadTest
+          script: |
+            gradle --no-daemon :app:connectedTinyDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.voicedub.app.VotUploadTest,com.voicedub.app.LocalTranslationTest,com.voicedub.app.TinyLanguageTest
+            adb shell run-as com.voicedub.app.preview cat files/tiny-metrics.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:

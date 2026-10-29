@@ -124,3 +124,21 @@ test('empty or truncated source parts fail without sending fake or partial audio
     r.context.__votCancel();
   }
 });
+
+
+test('VOT uses the requested output language instead of a hardcoded Russian target', async () => {
+  const p = await prototypes;
+  const r = runtime(req=>sessionResponse(req,p,{status:2,translationId:'t'}));
+  await r.context.__votTranslate({...request('one'),target:'en'});
+  const translated = p.VideoTranslationRequest.decode(r.requests.find(x=>x.url.endsWith('/translate')).body);
+  assert.equal(translated.responseLanguage,'en');
+  r.context.__votCancel();
+});
+
+test('a missing translation ID fails instead of leaving the source upload stuck', async () => {
+  const p = await prototypes;
+  const r = runtime(req=>sessionResponse(req,p,{status:6}));
+  await r.context.__votTranslate(request('one'));
+  assert.equal(r.results.at(-1).error,'source_unavailable');
+  r.context.__votCancel();
+});

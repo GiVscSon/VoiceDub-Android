@@ -1,7 +1,6 @@
 package com.voicedub.app
 
 import com.google.mlkit.common.model.DownloadConditions
-import com.google.mlkit.nl.translate.TranslateLanguage
 import com.google.mlkit.nl.translate.Translation
 import com.google.mlkit.nl.translate.Translator
 import com.google.mlkit.nl.translate.TranslatorOptions
@@ -19,34 +18,38 @@ interface TranslationEngine {
 }
 
 /** On-device ML Kit model after its first download. */
-class LocalTranslationEngine(source: String) : TranslationEngine {
-    private val client: Translator = Translation.getClient(
+class LocalTranslationEngine(source: String, target: String = "ru") : TranslationEngine {
+    private val route = TranslationRoute.create(source, target)
+    private val client: Translator? = if (route.isIdentity) null else Translation.getClient(
         TranslatorOptions.Builder()
-            .setSourceLanguage(source)
-            .setTargetLanguage(TranslateLanguage.RUSSIAN)
+            .setSourceLanguage(route.source)
+            .setTargetLanguage(route.target)
             .build()
     )
 
     override fun prepare(done: (Result<Unit>) -> Unit) {
-        client.downloadModelIfNeeded(DownloadConditions.Builder().build())
+        val active = client ?: run { done(Result.success(Unit)); return }
+        active.downloadModelIfNeeded(DownloadConditions.Builder().build())
             .addOnSuccessListener { done(Result.success(Unit)) }
             .addOnFailureListener { done(Result.failure(it)) }
     }
 
     override fun translate(text: String, done: (Result<String>) -> Unit) {
-        client.translate(text)
+        val active = client ?: run { done(Result.success(text)); return }
+        active.translate(text)
             .addOnSuccessListener { done(Result.success(it)) }
             .addOnFailureListener { done(Result.failure(it)) }
     }
 
-    override fun close() = client.close()
+    override fun close() { client?.close() }
 }
 
 /** Official Yandex Cloud text Translate API. API key is session-only, never stored. */
 class YandexCloudTranslationEngine(
     private val source: String,
     private val apiKey: String,
-    private val folderId: String
+    private val folderId: String,
+    private val target: String = "ru"
 ) : TranslationEngine {
     companion object {
         const val ENDPOINT = "https://translate.api.cloud.yandex.net/translate/v2/translate"
@@ -82,7 +85,7 @@ class YandexCloudTranslationEngine(
                     val body = JSONObject().apply {
                         put("folderId", folderId)
                         put("sourceLanguageCode", source)
-                        put("targetLanguageCode", "ru")
+                        put("targetLanguageCode", TranslationRoute.create(source, target).target)
                         put("texts", JSONArray().put(text))
                     }.toString()
                     activeConnection.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }

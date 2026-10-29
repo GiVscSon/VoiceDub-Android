@@ -28,7 +28,7 @@ import kotlin.math.sqrt
 import java.io.File
 import java.util.concurrent.atomic.AtomicLong
 
-/** Android 10+ user-approved internal PCM -> Vosk ASR -> ML Kit -> Russian TTS. */
+/** Android 10+ user-approved internal PCM -> Vosk ASR -> selected text provider -> matching TTS. */
 class AudioCaptureService : Service() {
     companion object {
         const val START = "com.voicedub.app.START"
@@ -52,6 +52,8 @@ class AudioCaptureService : Service() {
     private var translatorReady = false
     private var translator: TranslationEngine? = null
     private var sourceLanguage = "en"
+    private var targetLanguage = "ru"
+    private var ttsInitialized = false
     private var yandexActive = false
     private var translationSession: Long = 0L
     private var translationSequence: Long = 0L
@@ -106,10 +108,8 @@ class AudioCaptureService : Service() {
         overlay = FloatingStatus(this)
         tts = TextToSpeech(this) { status ->
             if (status == TextToSpeech.SUCCESS) {
-                val languageStatus = tts?.setLanguage(Locale("ru", "RU"))
-                if (languageStatus == TextToSpeech.LANG_MISSING_DATA || languageStatus == TextToSpeech.LANG_NOT_SUPPORTED) {
-                    showStatus("Русский голос TTS отсутствует: установите голосовой пакет")
-                }
+                ttsInitialized = true
+                configureTtsLanguage()
                 // Accessibility audio is excluded from third-party playback capture:
                 // avoid feeding dubbed speech back into the input.
                 tts?.setAudioAttributes(
@@ -126,11 +126,18 @@ class AudioCaptureService : Service() {
                     override fun onError(utteranceId: String?) { main.post { finishUtterance(utteranceId) } }
                     override fun onError(utteranceId: String?, errorCode: Int) { main.post { finishUtterance(utteranceId) } }
                 })
-                ttsReady = languageStatus != null && languageStatus != TextToSpeech.LANG_MISSING_DATA &&
-                    languageStatus != TextToSpeech.LANG_NOT_SUPPORTED
                 speakNext()
             }
         }
+    }
+
+    private fun configureTtsLanguage() {
+        if (!ttsInitialized) return
+        val result = tts?.setLanguage(Locale.forLanguageTag(targetLanguage))
+        ttsReady = result != null && result >= 0
+        val warning = if (ttsReady) "" else "Нет голоса TTS для языка ${TranslationLanguages.resolve(targetLanguage)?.label ?: targetLanguage}. Установите голосовой пакет; субтитры доступны."
+        getSharedPreferences("diagnostics", MODE_PRIVATE).edit().putString("ttsWarning", warning).apply()
+        if (warning.isNotEmpty()) showStatus(warning)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -140,9 +147,18 @@ class AudioCaptureService : Service() {
         }
         if (intent?.action != START || !recording.compareAndSet(false, true)) return START_NOT_STICKY
         outputMode = OutputMode.parse(intent.getStringExtra("outputMode"))
+        val target = TranslationLanguages.resolve(intent.getStringExtra("targetLanguage") ?: "ru")
+        if (target == null) { showStatus("Язык перевода не поддерживается"); stopSelf(); return START_NOT_STICKY }
+        targetLanguage = target.code
+        configureTtsLanguage()
         translationSession = SystemClock.elapsedRealtimeNanos()
         val endpoint = intent.getStringExtra("voiceEndpoint").orEmpty()
-        try { if (endpoint.isNotBlank() && outputMode != OutputMode.SUBTITLES) cloneClient = CloneSpeechClient(endpoint) }
+        try {
+            if (endpoint.isNotBlank() && outputMode != OutputMode.SUBTITLES) {
+                require(TranslationLanguages.supportsMoss(targetLanguage)) { "MOSS пока поддерживает только русскую озвучку" }
+                cloneClient = CloneSpeechClient(endpoint)
+            }
+        }
         catch (_: Exception) { recording.set(false); stopSelf(); return START_NOT_STICKY }
 
         createNotificationChannel()
@@ -179,14 +195,13 @@ class AudioCaptureService : Service() {
             }.also { grantedProjection.registerCallback(it, main) }
             val model = ModelCatalog.findByLanguageTag(intent.getStringExtra("lang"))
                 ?: throw IllegalArgumentException("Неизвестный язык")
-            initTranslator(
-                model.code,
-                intent.getStringExtra("translationEngine") ?: "local",
-                intent.getStringExtra("yandexApiKey").orEmpty(),
-                intent.getStringExtra("yandexFolderId").orEmpty()
-            )
             overlay?.update("VoiceDub запущен · подготовка модели…")
-            captureThread = Thread({ captureLoop(grantedProjection, model) }, "voicedub-asr").also { it.start() }
+            val autoLanguage = intent.getBooleanExtra("autoLocalLanguage", false) && LocalSpeechDetector.available
+            if (!autoLanguage) getSharedPreferences("diagnostics", MODE_PRIVATE).edit().putString("languageDetection", "Исходный язык выбран вручную: ${model.label}").apply()
+            val backend = intent.getStringExtra("translationEngine") ?: "local"
+            val key = intent.getStringExtra("yandexApiKey").orEmpty()
+            val folder = intent.getStringExtra("yandexFolderId").orEmpty()
+            captureThread = Thread({ captureLoop(grantedProjection, model, autoLanguage, backend, key, folder) }, "voicedub-asr").also { it.start() }
         } catch (e: Exception) {
             showStatus("Ошибка запуска: ${e.message}")
             stopSelf()
@@ -196,12 +211,12 @@ class AudioCaptureService : Service() {
 
     private fun initTranslator(source: String, backend: String, apiKey: String, folderId: String) {
         sourceLanguage = source
-        yandexActive = backend == "yandex-cloud"
+        yandexActive = backend == "yandex-cloud" && source != targetLanguage
         translator = if (yandexActive) {
-            YandexCloudTranslationEngine(source, apiKey, folderId)
-        } else LocalTranslationEngine(source)
+            YandexCloudTranslationEngine(source, apiKey, folderId, targetLanguage)
+        } else LocalTranslationEngine(source, targetLanguage)
         translatorReady = false
-        showStatus("Подготовка движка: ${if (backend == "yandex-cloud") "Yandex Cloud" else "ML Kit"}")
+        showStatus("Подготовка движка: ${if (source == targetLanguage) "без перевода" else if (yandexActive) "Yandex Cloud" else "ML Kit"}")
         translator?.prepare { result -> main.post {
             if (!recording.get()) return@post
             result.onSuccess {
@@ -215,7 +230,7 @@ class AudioCaptureService : Service() {
         } }
     }
 
-    private fun captureLoop(grantedProjection: MediaProjection, speechModel: SpeechModel) {
+    private fun captureLoop(grantedProjection: MediaProjection, speechModel: SpeechModel, autoLanguage: Boolean, backend: String, key: String, folder: String) {
         try {
             val captureConfig = AudioPlaybackCaptureConfiguration.Builder(grantedProjection)
                 .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
@@ -233,17 +248,24 @@ class AudioCaptureService : Service() {
             check(minBytes > 0) { "Неподдерживаемый формат AudioRecord" }
             val capture = AudioRecord.Builder()
                 .setAudioFormat(audioFormat)
-                .setBufferSizeInBytes(maxOf(minBytes, 32768))
+                .setBufferSizeInBytes(maxOf(minBytes, if (autoLanguage) SAMPLE_RATE * 2 * 20 else 32768))
                 .setAudioPlaybackCaptureConfig(captureConfig)
                 .build()
             audioRecord = capture
             check(capture.state == AudioRecord.STATE_INITIALIZED) { "AudioRecord не инициализирован" }
-            Model(speechModel.directory(filesDir).absolutePath).use { model ->
+            capture.startRecording()
+            val probe = if (autoLanguage) detectSourceLanguage(capture, speechModel) else SourceProbe(speechModel, ByteArray(0), captureEpoch.get())
+            if (!recording.get()) return
+            main.post { if (recording.get()) initTranslator(probe.model.code, backend, key, folder) }
+            Model(probe.model.directory(filesDir).absolutePath).use { model ->
                 Recognizer(model, SAMPLE_RATE.toFloat()).use { recognizer ->
                     val buffer = ByteArray(8192)
                     var seenEpoch = captureEpoch.get()
-                    capture.startRecording()
-                    showStatus("Захват PCM активен · ожидаю речь")
+                    if (probe.epoch == captureEpoch.get() && probe.pcm.isNotEmpty() && recognizer.acceptWaveForm(probe.pcm, probe.pcm.size)) {
+                        val original = JSONObject(recognizer.result).optString("text").trim()
+                        main.post { if (probe.epoch == captureEpoch.get() && original.isNotEmpty()) enqueueText(original, null) }
+                    }
+                    showStatus("Захват PCM активен · ${probe.model.label}")
                     while (recording.get()) {
                         val n = capture.read(buffer, 0, buffer.size)
                         if (n <= 0) {
@@ -287,6 +309,45 @@ class AudioCaptureService : Service() {
         } finally {
             main.post { stopSelf() }
         }
+    }
+
+    private data class SourceProbe(val model: SpeechModel, val pcm: ByteArray, val epoch: Long)
+
+    private fun detectSourceLanguage(capture: AudioRecord, fallback: SpeechModel): SourceProbe {
+        val window = LanguageSampleWindow()
+        val replay = java.io.ByteArrayOutputStream()
+        val buffer = ByteArray(8192)
+        var epoch = captureEpoch.get()
+        var sampled = 0
+        showStatus("Определяю язык локально: нужно около 6 секунд речи…")
+        while (recording.get() && !window.ready && sampled < 20 * SAMPLE_RATE * 2) {
+            val n = capture.read(buffer, 0, buffer.size)
+            if (n <= 0) break
+            sampled += n
+            if (epoch != captureEpoch.get()) { epoch = captureEpoch.get(); window.clear(); replay.reset() }
+            if (!captureAllowed) continue
+            val size = n - n % 2
+            replay.write(buffer, 0, size); window.append(buffer, size)
+        }
+        var model = fallback
+        var message = "Недостаточно речи; резервный язык: ${fallback.label}"
+        if (recording.get() && window.ready) {
+            try {
+                val detector = LocalSpeechDetector.open(this)
+                val detected = try { detector.detect(window.samples()) } finally { detector.close() }
+                val candidate = ModelCatalog.findByLanguageTag(detected)
+                if (candidate != null && candidate.directory(filesDir).resolve("am/final.mdl").isFile) {
+                    model = candidate; message = "Локально определён язык: ${candidate.label}"
+                } else message = if (detected == null) "Язык не определён уверенно; резерв: ${fallback.label}" else "Определён $detected, но модель распознавания не установлена; резерв: ${fallback.label}"
+            } catch (_: Exception) { message = "Локальная модель недоступна; резерв: ${fallback.label}" }
+            catch (_: LinkageError) { message = "Движок Tiny несовместим с устройством; резерв: ${fallback.label}" }
+        }
+        if (epoch != captureEpoch.get()) {
+            model = fallback; replay.reset(); message = "Видео изменилось при определении языка; резерв: ${fallback.label}"
+        }
+        getSharedPreferences("diagnostics", MODE_PRIVATE).edit().putString("languageDetection", message).apply()
+        showStatus(message)
+        return SourceProbe(model, replay.toByteArray(), captureEpoch.get())
     }
 
     private fun enqueueText(original: String, reference: ByteArray?) {
@@ -429,7 +490,7 @@ class AudioCaptureService : Service() {
         translatorReady = false
         pendingTexts.addFirst(segment)
         translator?.close()
-        val local = LocalTranslationEngine(sourceLanguage)
+        val local = LocalTranslationEngine(sourceLanguage, targetLanguage)
         translator = local
         showStatus("Yandex недоступен ($cause). Переключаюсь на локальный ML Kit…")
         local.prepare { result -> main.post {

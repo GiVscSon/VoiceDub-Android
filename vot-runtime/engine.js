@@ -60,13 +60,14 @@ globalThis.__votTranslate = async request => {
   try {
     const result = await state.client.translateVideo({
       videoData: {url:request.url, videoId:request.videoId, host:request.host, duration:request.duration},
-      requestLang:request.language || 'auto', responseLang:'ru',
+      requestLang:request.language || 'auto', responseLang:request.target || 'ru',
       extraOpts: {useLivelyVoice:request.lively === true, firstRequest:state.first, forceSourceLang:request.language !== 'auto'},
       shouldSendFailedAudio:false,
     });
     if (!current(state)) return;
     state.first = false;
     state.translationId = result.translationId || null;
+    if (result.status === 6 && !state.translationId) throw new Error('source-unavailable');
     emit(state, {ok:true, ...result, sourceAlreadyUploaded:state.uploaded});
   } catch (error) { fail(state, error, 'translate'); }
   finally { state.busy = false; }

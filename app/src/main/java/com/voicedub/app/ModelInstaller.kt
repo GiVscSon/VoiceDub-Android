@@ -49,6 +49,7 @@ object ModelInstaller {
                         }
                     }
                 }
+                require(expected < 0 || archive.length() == expected) { "Загрузка прервалась: размер архива не совпадает" }
             } finally { conn.disconnect() }
             progress("Распаковка языковой модели…")
             var expanded = 0L

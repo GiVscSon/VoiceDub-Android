@@ -59,7 +59,7 @@ class MainActivity : Activity() {
         selector = Spinner(this)
         selector.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, ModelCatalog.entries.map { it.label })
         val savedLanguage = getSharedPreferences("settings", MODE_PRIVATE).getString("sourceLanguage", "en")
-        selector.setSelection(ModelCatalog.entries.indexOfFirst { it.code == savedLanguage }.coerceAtLeast(0))
+        selector.setSelection(ModelCatalog.entries.indexOf(ModelCatalog.findByLanguageTag(savedLanguage)).coerceAtLeast(0))
         selector.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, position: Int, id: Long) {
                 getSharedPreferences("settings", MODE_PRIVATE).edit()

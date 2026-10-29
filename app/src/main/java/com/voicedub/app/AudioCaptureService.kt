@@ -177,7 +177,7 @@ class AudioCaptureService : Service() {
             projectionCallback = object : MediaProjection.Callback() {
                 override fun onStop() { stopSelf() }
             }.also { grantedProjection.registerCallback(it, main) }
-            val model = ModelCatalog.entries.firstOrNull { it.code == intent.getStringExtra("lang") }
+            val model = ModelCatalog.findByLanguageTag(intent.getStringExtra("lang"))
                 ?: throw IllegalArgumentException("Неизвестный язык")
             initTranslator(
                 model.code,

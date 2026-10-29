@@ -24,6 +24,11 @@ jobs:
         run: python3 scripts/check_project.py
       - name: Voice server tests
         run: python3 -m unittest discover -s tests -p 'test_*.py' -v
+      - name: Build pinned VOT runtime from source
+        run: |
+          npm ci --prefix vot-runtime
+          npm run build --prefix vot-runtime
+          git diff --exit-code -- app/src/main/assets/vot_engine.js
       - name: Browser module checks
         run: |
           node --check app/src/main/assets/vot_engine.js

@@ -10,7 +10,7 @@
 
     <application
         android:allowBackup="false"
-        android:label="VoiceDub 0.5 · тест"
+        android:label="VoiceDub 0.6 · тест"
         android:theme="@android:style/Theme.Material.Light.NoActionBar"
         android:networkSecurityConfig="@xml/network_security_config">
         <activity

@@ -8,3 +8,6 @@ companion/MOSS-TTS-Nano/
 *.wav
 experiment-results/
 node_modules/
+
+app/src/androidTest/assets/lid/
+*.onnx

@@ -21,6 +21,9 @@ class MainActivity : Activity() {
     }
     private lateinit var status: TextView
     private lateinit var selector: Spinner
+    private lateinit var targetSelector: Spinner
+    private lateinit var autoLocalLanguage: CheckBox
+    @Volatile private var tinyDownloadActive = false
     private lateinit var modeSelector: Spinner
     private lateinit var download: Button
     private lateinit var translatorSelector: Spinner
@@ -53,12 +56,49 @@ class MainActivity : Activity() {
             setPadding(margin, dp(16), margin, dp(24))
         }
         screen.addView(content)
-        content.addView(paragraph("VoiceDub · голосовой перевод видео", 24f))
+        content.addView(paragraph("VoiceDub ${BuildConfig.VERSION_NAME} · голосовой перевод видео", 24f))
         content.addView(paragraph("Работает на Android 10+; телефон и планшет. Захватывает доступный внутренний звук, не записывает изображение и не требует root."))
         content.addView(paragraph("Язык исходного видео:"))
         selector = Spinner(this)
         selector.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, ModelCatalog.entries.map { it.label })
+        val savedLanguage = getSharedPreferences("settings", MODE_PRIVATE).getString("sourceLanguage", "en")
+        selector.setSelection(ModelCatalog.entries.indexOf(ModelCatalog.findByLanguageTag(savedLanguage)).coerceAtLeast(0))
+        selector.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, position: Int, id: Long) {
+                getSharedPreferences("settings", MODE_PRIVATE).edit()
+                    .putString("sourceLanguage", ModelCatalog.entries[position].code).apply()
+            }
+            override fun onNothingSelected(parent: android.widget.AdapterView<*>?) = Unit
+        }
         content.addView(selector)
+        content.addView(paragraph("Переводить на язык:"))
+        targetSelector = Spinner(this).apply {
+            adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, TranslationLanguages.entries.map { it.label })
+            val saved = getSharedPreferences("settings", MODE_PRIVATE).getString("targetLanguage", "ru")
+            setSelection(TranslationLanguages.entries.indexOf(TranslationLanguages.resolve(saved)).coerceAtLeast(0))
+            onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, position: Int, id: Long) {
+                    val language = TranslationLanguages.entries[position].code
+                    getSharedPreferences("settings", MODE_PRIVATE).edit().putString("targetLanguage", language).apply()
+                    if (::cloneEnabled.isInitialized) {
+                        cloneEnabled.isEnabled = TranslationLanguages.supportsMoss(language)
+                        if (!TranslationLanguages.supportsMoss(language)) cloneEnabled.isChecked = false
+                    }
+                }
+                override fun onNothingSelected(parent: android.widget.AdapterView<*>?) = Unit
+            }
+        }
+        content.addView(targetSelector)
+        autoLocalLanguage = CheckBox(this).apply {
+            text = "Определять язык речи локально при запуске · Tiny (резерв — выбранный исходный язык)"
+            isEnabled = LocalSpeechDetector.available
+            isChecked = LocalSpeechDetector.available && getSharedPreferences("settings", MODE_PRIVATE).getBoolean("autoLocalLanguage", false)
+            setOnCheckedChangeListener { _, checked -> getSharedPreferences("settings", MODE_PRIVATE).edit().putBoolean("autoLocalLanguage", checked).apply() }
+        }
+        content.addView(autoLocalLanguage)
+        if (LocalSpeechDetector.available) content.addView(btn("Скачать Whisper tiny int8 для определения языка · 98 МиБ") { installTinyModel() })
+        else content.addView(paragraph("Локальное автоопределение доступно в отдельной сборке VoiceDub Tiny. Обычный вариант Core сохраняет ручной выбор без дополнительного движка."))
+        content.addView(paragraph("Озвучка использует голос Android выбранного языка. Для одинаковых языков выводится распознанная речь без перевода."))
         content.addView(paragraph("Режим перевода:"))
         modeSelector = Spinner(this).apply {
             adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, OutputMode.entries.map { it.label })
@@ -99,7 +139,8 @@ class MainActivity : Activity() {
         })
         content.addView(paragraph("Вход VOT не заменяет ML Kit и не предоставляет доступ к Yandex Cloud Translate. Запрос дорожки VOT — отдельная кнопка во встроенном браузере для YouTube/Vimeo; доступность сервиса не гарантируется."))
         cloneEnabled = CheckBox(this).apply {
-            text = "Сохранять особенности исходного голоса · сервер MOSS на моём ПК"
+            text = "Сохранять особенности исходного голоса · MOSS на ПК (только русский)"
+            isEnabled = TranslationLanguages.supportsMoss(TranslationLanguages.entries[targetSelector.selectedItemPosition].code)
             isChecked = false
         }
         content.addView(cloneEnabled)
@@ -138,7 +179,7 @@ class MainActivity : Activity() {
         content.addView(status)
         download = btn("1. Скачать модель распознавания") { installModel() }
         content.addView(download)
-        content.addView(paragraph("Модель перевода ML Kit автоматически скачивается отдельно при первом запуске. Русская озвучка использует установленный движок TTS Android."))
+        content.addView(paragraph("Модель перевода ML Kit автоматически скачивается отдельно при первом запуске. Озвучка использует установленный голос TTS Android выбранного языка."))
         content.addView(btn("2. Разрешить плавающее окно (необязательно)") {
             val permission = Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))
             startActivity(permission)
@@ -149,14 +190,32 @@ class MainActivity : Activity() {
             startService(Intent(this, AudioCaptureService::class.java).setAction(AudioCaptureService.STOP))
             status.text = "Перевод остановлен"
         })
+        content.addView(btn("Настроить голоса Android") {
+            try { startActivity(Intent(android.speech.tts.TextToSpeech.Engine.ACTION_INSTALL_TTS_DATA)) }
+            catch (_: android.content.ActivityNotFoundException) { status.text = "Откройте настройки синтеза речи Android и установите голос выбранного языка." }
+        })
         content.addView(btn("Последняя диагностика") {
             val last = getSharedPreferences("diagnostics", MODE_PRIVATE).getString("last", "Запусков ещё не было")
-            status.text = "Последнее сообщение: $last"
+            val voice = getSharedPreferences("diagnostics", MODE_PRIVATE).getString("ttsWarning", "").orEmpty()
+            val detection = getSharedPreferences("diagnostics", MODE_PRIVATE).getString("languageDetection", "").orEmpty()
+            status.text = "Последнее сообщение: $last\n$detection\n$voice"
         })
         content.addView(paragraph("Субтитры во встроенном браузере не требуют разрешения на плавающее окно. Для субтитров поверх Chrome/Opera оно потребуется."))
         content.addView(paragraph("Важно: Android покажет запрос на захват экрана/аудио, но VoiceDub читает только звуковые PCM-сэмплы. Для большинства видеоплееров выбирайте полный экран (если система предлагает выбор). Некоторые приложения запрещают захват. Оригинальный звук автоматически не отключается."))
         content.addView(paragraph("Проверка: включите видео с иностранной речью в браузере. Если окно показывает 'PCM: тишина', источник не разрешает захват либо видео не воспроизводит звук."))
         setContentView(screen)
+    }
+
+    private fun installTinyModel() {
+        if (tinyDownloadActive) return
+        tinyDownloadActive = true
+        Thread({
+            try {
+                TinyLanguageAssets.install(this) { message -> runOnUiThread { status.text = message } }
+                runOnUiThread { status.text = "Whisper tiny готов. Для каждого исходного языка также нужна модель Vosk. Звук обрабатывается на устройстве." }
+            } catch (_: Exception) { runOnUiThread { status.text = "Не удалось скачать модель Tiny. Проверьте сеть и свободное место; ручной режим доступен." } }
+            finally { tinyDownloadActive = false }
+        }, "tiny-download").start()
     }
 
     private fun installModel() {
@@ -182,6 +241,10 @@ class MainActivity : Activity() {
     }
 
     private fun requestCapture() {
+        if (autoLocalLanguage.isChecked && !TinyLanguageAssets.installed(this)) {
+            status.text = "Сначала скачайте модель Whisper tiny или выключите локальное автоопределение."
+            return
+        }
         if (cloneEnabled.isChecked) {
             try {
                 val endpoint = VoiceEndpoint.normalize(cloneAddress.text.toString())
@@ -237,6 +300,8 @@ class MainActivity : Activity() {
             putExtra("projectionResult", resultCode)
             putExtra("projectionData", data)
             putExtra("lang", selectedModel().code)
+            putExtra("targetLanguage", TranslationLanguages.entries[targetSelector.selectedItemPosition].code)
+            putExtra("autoLocalLanguage", autoLocalLanguage.isChecked)
             putExtra("outputMode", OutputMode.entries[modeSelector.selectedItemPosition].name)
             putExtra("voiceEndpoint", if (cloneEnabled.isChecked) cloneAddress.text.toString() else "")
             putExtra("translationEngine", if (translatorSelector.selectedItemPosition == 1) "yandex-cloud" else "local")

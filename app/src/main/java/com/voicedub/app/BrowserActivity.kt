@@ -16,11 +16,14 @@ import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.CheckBox
+import java.io.File
 import android.widget.Button
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
+import android.widget.ScrollView
 import org.json.JSONObject
 
 /** Experimental first-party browser: detects HTML5 video. Audio is still captured by AudioCaptureService. */
@@ -55,6 +58,16 @@ class BrowserActivity : Activity() {
     private val dubHandoff = DubHandoffGate()
     private var votAttempts = 0
     private var votRetry: Runnable? = null
+    private lateinit var autoVotLanguage: CheckBox
+    private lateinit var allowSourceUpload: CheckBox
+    private val sourceLoader by lazy { VotSourceLoader(this) }
+    private var sourceFile: File? = null
+    private var sourceKey = ""
+    private var pickerKey = ""
+    private var sourcePreparing = false
+    private var votDeadline = 0L
+    private var attachedVotUrl = ""
+    private var attachedVotKey = ""
 
     private fun publishPlayback(found: Boolean, paused: Boolean, seeking: Boolean, key: String) {
         val signature = "$found|$paused|$seeking|$key"
@@ -107,7 +120,7 @@ class BrowserActivity : Activity() {
                     val found = data.optBoolean("found")
                     val identity = if (found) data.optString("videoId") else ""
                     val playerKey = if (found) data.optString("playerKey") else ""
-                    if (identity != videoIdentity || playerKey != videoPlayerKey) cancelVot()
+                    if (identity != videoIdentity || playerKey != videoPlayerKey) { cancelVot(); clearSource() }
                     videoIdentity = identity
                     videoPlayerKey = playerKey
                     videoDuration = data.optDouble("duration", 0.0)
@@ -132,7 +145,7 @@ class BrowserActivity : Activity() {
                     // Preserve the local translator until an actual audio playback event.
                     if (dubHandoff.onState(dubbing?.optString("state"))) {
                         stopService(Intent(this@BrowserActivity, AudioCaptureService::class.java))
-                        votLabel.text = "VOT: русская дорожка воспроизводится; локальная озвучка остановлена"
+                        votLabel.text = "VOT: дорожка перевода воспроизводится; локальная озвучка остановлена"
                     }
                     dubLabel.text = if (dubbing?.optBoolean("attached") == true) {
                         val drift = dubbing.optDouble("driftSeconds", 0.0)
@@ -169,6 +182,10 @@ class BrowserActivity : Activity() {
             FrameLayout.LayoutParams.WRAP_CONTENT,
             Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
         ))
+        val panel = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val panelScroll = ScrollView(this).apply { addView(panel) }
+        val panelHeight = (resources.displayMetrics.heightPixels * 0.38).toInt()
+        content.addView(panelScroll, LinearLayout.LayoutParams(-1, panelHeight))
         val tools = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         val back = Button(this).apply { text = "‹"; setOnClickListener { if (web.canGoBack()) web.goBack() else finish() } }
         address = EditText(this).apply {
@@ -180,16 +197,31 @@ class BrowserActivity : Activity() {
         tools.addView(back)
         tools.addView(address, LinearLayout.LayoutParams(0, -2, 1f))
         tools.addView(go)
-        content.addView(tools)
+        panel.addView(tools)
         label = TextView(this).apply {
             text = "Встроенный браузер: поиск HTML5-видео. Запуск аудиоперевода выполняется в основном экране VoiceDub."
             textSize = 13f
             setPadding(12, 8, 12, 8)
         }
-        content.addView(label)
+        panel.addView(label)
         votLabel = TextView(this).apply { text = "VOT: экспериментальный перевод текущего видео"; textSize = 12f }
-        content.addView(votLabel)
-        content.addView(Button(this).apply {
+        panel.addView(votLabel)
+        autoVotLanguage = CheckBox(this).apply { text = "Яндекс: определить язык автоматически"; isChecked = true }
+        allowSourceUpload = CheckBox(this).apply { text = "Разрешить отправку полной исходной дорожки Яндексу (до 80 МБ)" }
+        panel.addView(autoVotLanguage)
+        panel.addView(allowSourceUpload)
+        panel.addView(Button(this).apply {
+            text = "Выбрать исходный аудиофайл (если источник недоступен)"
+            setOnClickListener {
+                if (VotPolicy.video(videoIdentity) == null) { votLabel.text = "Сначала откройте видео YouTube или Vimeo"; return@setOnClickListener }
+                pickerKey = videoPlayerKey
+                startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                    type = "audio/*"; addCategory(Intent.CATEGORY_OPENABLE)
+                }, 205)
+            }
+        })
+        panel.addView(Button(this).apply { text = "Отменить запрос Яндекса"; setOnClickListener { cancelVot(); votLabel.text = "Запрос Яндекса отменён" } })
+        panel.addView(Button(this).apply {
             text = "Перевести видео · Яндекс VOT (эксперимент)"
             setOnClickListener {
                 if (VotPolicy.video(videoIdentity) == null) {
@@ -197,6 +229,7 @@ class BrowserActivity : Activity() {
                 } else {
                     cancelVot()
                     votAttempts = 0
+                    votDeadline = android.os.SystemClock.elapsedRealtime() + 20 * 60 * 1000L
                     votJob = android.os.SystemClock.elapsedRealtimeNanos().toString()
                     requestVot()
                 }
@@ -204,10 +237,10 @@ class BrowserActivity : Activity() {
         })
         dubUrl = EditText(this).apply {
             setSingleLine(true)
-            hint = "HTTPS-ссылка на готовую русскую аудиодорожку (MP3/M4A)"
+            hint = "HTTPS-ссылка на готовую аудиодорожку перевода (MP3/M4A)"
             inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_URI
         }
-        content.addView(dubUrl)
+        panel.addView(dubUrl)
         val controls = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         controls.addView(Button(this).apply {
             text = "Подключить дорожку"
@@ -217,16 +250,17 @@ class BrowserActivity : Activity() {
             text = "Отключить"
             setOnClickListener {
                 web.evaluateJavascript("window.__voicedubDubbing?.detach()", null)
+                attachedVotUrl = ""; attachedVotKey = ""
                 dubLabel.text = "Озвучка отключена"
             }
         })
-        content.addView(controls)
+        panel.addView(controls)
         dubLabel = TextView(this).apply {
             text = "Введите прямую ссылку на готовую аудиодорожку. После подключения нажмите синюю кнопку внутри страницы."
             textSize = 12f
             setPadding(12, 4, 12, 8)
         }
-        content.addView(dubLabel)
+        panel.addView(dubLabel)
         web = WebView(this)
         web.settings.javaScriptEnabled = true
         web.settings.domStorageEnabled = true
@@ -238,6 +272,7 @@ class BrowserActivity : Activity() {
             override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
                 super.onPageStarted(view, url, favicon)
                 cancelVot()
+                clearSource()
                 videoIdentity = ""
                 dubLabel.text = "Страница изменилась: предыдущая дорожка отключена"
                 publishPlayback(false, true, false, "")
@@ -276,9 +311,18 @@ class BrowserActivity : Activity() {
     private fun requestVot() {
         val job = votJob ?: return
         if (!visible) { cancelVot(); return }
-        if (++votAttempts > 20) { votLabel.text = "VOT: время ожидания истекло"; cancelVot(); return }
-        val language = getSharedPreferences("settings", MODE_PRIVATE).getString("sourceLanguage", "en") ?: "en"
-        if (!vot.translate(job, videoIdentity, videoDuration, language)) {
+        if (++votAttempts > 80 || android.os.SystemClock.elapsedRealtime() > votDeadline) { votLabel.text = "VOT: время ожидания истекло"; cancelVot(); return }
+        val language = if (autoVotLanguage.isChecked) "auto" else getSharedPreferences("settings", MODE_PRIVATE).getString("sourceLanguage", "en") ?: "en"
+        if (!VotPolicy.supportsLanguage(language)) {
+            votLabel.text = "Этот исходный язык недоступен в используемом VOT. Включите автоопределение Яндекса или используйте локальный перевод."
+            cancelVot(); return
+        }
+        val target = getSharedPreferences("settings", MODE_PRIVATE).getString("targetLanguage", "ru") ?: "ru"
+        if (!VotPolicy.supportsTarget(target)) {
+            votLabel.text = "Выбранный язык перевода недоступен в VOT. Используйте локальный режим для этого направления."
+            cancelVot(); return
+        }
+        if (!vot.translate(job, videoIdentity, videoDuration, language, target)) {
             votLabel.text = "VOT ещё загружается. Повторите через несколько секунд."
             cancelVot()
         } else votLabel.text = "VOT: запрос перевода${if (VotAccount.accessToken() != null) " с авторизацией Яндекса" else " без входа"}…"
@@ -286,8 +330,30 @@ class BrowserActivity : Activity() {
 
     private fun receiveVot(job: String, result: JSONObject) {
         if (job != votJob || !visible) return
+        if (result.optBoolean("uploading")) {
+            votLabel.text = "Яндекс: отправлено частей ${result.optInt("uploadedParts")} / ${result.optInt("totalParts")}"
+            return
+        }
+        if (result.optBoolean("uploaded")) { scheduleVot(5); return }
         if (!result.optBoolean("ok")) {
-            votLabel.text = "VOT не вернул перевод. Проверьте доступ к Яндексу и вход; локальный перевод доступен отдельно."
+            val stage = when (result.optString("stage")) {
+                "session" -> "создание сессии"
+                "translate" -> "запрос перевода"
+                "upload" -> "передача исходного аудио"
+                else -> "ответ сервиса"
+            }
+            val status = result.optInt("httpStatus").takeIf { it in 100..599 }
+            val reason = when (result.optString("error")) {
+                "auth_required" -> "Яндекс запросил авторизацию"
+                "http_auth" -> "сервис отказал в доступе"
+                "rate_limit" -> "слишком много запросов, попробуйте позже"
+                "server" -> "ошибка сервиса Яндекса, попробуйте позже"
+                "source_unavailable" -> "не удалось прочитать исходную дорожку"
+                "network" -> "нет ответа от сервиса: проверьте соединение"
+                "http" -> "ошибка HTTP"
+                else -> "сервис не вернул дорожку"
+            }
+            votLabel.text = "VOT: $reason ($stage${status?.let { ", HTTP $it" } ?: ""}). Локальный перевод доступен."
             cancelVot(); return
         }
         if (result.optBoolean("translated")) {
@@ -296,19 +362,80 @@ class BrowserActivity : Activity() {
                 votLabel.text = "VOT вернул неподдерживаемую дорожку"; cancelVot(); return
             }
             // Do not stop live subtitles/TTS yet: audio must start after a user gesture.
-            dubUrl.setText(url)
-            attachDubbing()
-            cancelVot()
+            if (attachedVotUrl != url || attachedVotKey != videoPlayerKey) { dubUrl.setText(url); attachDubbing() }
+            if (result.optInt("status") == 5) scheduleVot(result.optInt("remainingTime", 15))
+            else cancelVot()
         } else if (result.optInt("status") in listOf(2, 3)) {
-            votLabel.text = "VOT готовит перевод. Проверяю через 15 секунд…"
-            votRetry = Runnable { requestVot() }.also { ui.postDelayed(it, 15000) }
+            scheduleVot(result.optInt("remainingTime", 15))
+        } else if (result.optInt("status") == 6 && !result.optBoolean("sourceAlreadyUploaded")) {
+            prepareVotSource(job)
         } else {
-            votLabel.text = "VOT запросил дополнительные данные; загрузка исходного аудио не поддерживается"
+            votLabel.text = "Яндекс не принял исходную дорожку или вернул неизвестный статус. Повторите позже."
             cancelVot()
         }
     }
 
+    private fun scheduleVot(seconds: Int) {
+        val wait = seconds.coerceIn(5, 30)
+        votLabel.text = "Яндекс обрабатывает видео. Следующая проверка через $wait с…"
+        votRetry?.let { ui.removeCallbacks(it) }
+        votRetry = Runnable { requestVot() }.also { ui.postDelayed(it, wait * 1000L) }
+    }
+
+    private fun prepareVotSource(job: String) {
+        if (!allowSourceUpload.isChecked) {
+            votLabel.text = "Яндекс запросил исходное аудио. Разрешите отправку дорожки и повторите запрос."
+            cancelVot(); return
+        }
+        if (sourceKey == videoPlayerKey && sourceFile?.isFile == true) {
+            if (vot.uploadSource(job, sourceFile!!)) votLabel.text = "Яндекс: передаю исходную дорожку…"
+            else { votLabel.text = "Не удалось начать отправку дорожки"; cancelVot() }
+            return
+        }
+        if (sourcePreparing) return
+        sourcePreparing = true
+        val key = videoPlayerKey
+        web.evaluateJavascript("window.__voicedubProbe?.sourceAudio() || null") { json ->
+            if (job != votJob || key != videoPlayerKey || !visible) return@evaluateJavascript
+            val data = try { JSONObject(json) } catch (_: Exception) { JSONObject() }
+            val url = data.optString("url")
+            if (data.optBoolean("drm") || data.optString("playerKey") != key || !VotSourcePolicy.allowedUrl(url)) {
+                votLabel.text = if (data.optBoolean("drm")) "Защищённое видео: исходный поток не извлекается" else "Прямая аудиодорожка недоступна. Выберите исходный аудиофайл и повторите запрос."
+                cancelVot(); return@evaluateJavascript
+            }
+            votLabel.text = "Загружаю полную исходную дорожку (до 80 МБ)…"
+            sourceLoader.fromUrl(url) { result ->
+                sourcePreparing = false
+                if (job != votJob || key != videoPlayerKey || !visible) { result.getOrNull()?.delete(); return@fromUrl }
+                result.onSuccess { file -> clearSource(); sourceFile = file; sourceKey = key; prepareVotSource(job) }
+                    .onFailure { votLabel.text = "Источник не дал скачать дорожку. Выберите аудиофайл и повторите запрос."; cancelVot() }
+            }
+        }
+    }
+
+    private fun clearSource() { sourceFile?.delete(); sourceFile = null; sourceKey = "" }
+
+    @Deprecated("Activity result compatibility")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != 205 || resultCode != RESULT_OK) return
+        val uri = data?.data ?: return
+        val key = pickerKey
+        if (key.isBlank() || key != videoPlayerKey) return
+        votLabel.text = "Читаю выбранную исходную дорожку…"
+        sourceLoader.fromDocument(uri) { result ->
+            if (key != videoPlayerKey || isFinishing) { result.getOrNull()?.delete(); return@fromDocument }
+            result.onSuccess { file ->
+                clearSource(); sourceFile = file; sourceKey = key
+                votLabel.text = "Аудиофайл выбран для этого видео. Разрешите отправку и нажмите «Перевести видео» снова."
+            }.onFailure { votLabel.text = "Не удалось прочитать аудиофайл (лимит 80 МБ)" }
+        }
+    }
+
     private fun cancelVot() {
+        if (::vot.isInitialized) vot.cancel()
+        sourceLoader.cancel()
+        sourcePreparing = false
         votJob = null
         votRetry?.let { ui.removeCallbacks(it) }
         votRetry = null
@@ -324,10 +451,13 @@ class BrowserActivity : Activity() {
         // Escape user input as a JSON string; never interpolate raw URL into JS code.
         val escaped = JSONObject.quote(media)
         val expression = "window.__voicedubDubbing ? window.__voicedubDubbing.attach({url:$escaped}) : ({ok:false,error:'player-not-ready'})"
+        val key = videoPlayerKey
         web.evaluateJavascript(expression) { json ->
+            if (key != videoPlayerKey || !visible) return@evaluateJavascript
             try {
                 val result = JSONObject(json)
                 dubLabel.text = if (result.optBoolean("ok")) {
+                    attachedVotUrl = media; attachedVotKey = key
                     "Дорожка прикреплена к ${result.optString("videoId")}. Нажмите кнопку ▶ внутри видео для запуска звука."
                 } else "Не удалось подключить дорожку: ${result.optString("error")}."
             } catch (_: Exception) {
@@ -379,6 +509,8 @@ class BrowserActivity : Activity() {
         visible = false
         cancelVot()
         if (::vot.isInitialized) vot.close()
+        sourceLoader.close()
+        clearSource()
         publishPlayback(false, true, false, "")
         ui.removeCallbacks(poll)
         exitFullscreen()

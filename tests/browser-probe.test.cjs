@@ -67,3 +67,26 @@ test('stops treating removed videos as active after rescan',()=>{
  assert.equal(probe.snapshot().found,true); a.isConnected=false;els.videos=[];
  intervals[0](); assert.equal(probe.snapshot().found,false);
 });
+
+test('source lookup returns only an unsigned audio URL for the matching YouTube video',()=>{
+ const v=video();
+ v.ownerDocument.getElementById=()=>({getPlayerResponse:()=>({videoDetails:{videoId:'abc123'},streamingData:{adaptiveFormats:[
+  {url:'https://r1.googlevideo.com/expensive',mimeType:'audio/mp4',bitrate:128000},
+  {url:'https://r1.googlevideo.com/selected',mimeType:'audio/webm',bitrate:48000},
+  {signatureCipher:'cipher',url:'https://r1.googlevideo.com/cipher',mimeType:'audio/webm',bitrate:1000},
+  {url:'https://r1.googlevideo.com/video',mimeType:'video/webm',bitrate:1000}
+ ]}})});
+ const {probe}=setup('https://www.youtube.com/watch?v=abc123',{videos:[v]});
+ assert.equal(probe.sourceAudio().url,'https://r1.googlevideo.com/selected');
+ assert.equal(probe.sourceAudio().playerKey,probe.snapshot().playerKey);
+});
+
+test('stale YouTube metadata, DRM and blob handles never become a direct source',()=>{
+ const v=video();
+ v.ownerDocument.getElementById=()=>({getPlayerResponse:()=>({videoDetails:{videoId:'different'},streamingData:{adaptiveFormats:[{url:'https://r1.googlevideo.com/stale',mimeType:'audio/mp4'}]}})});
+ const {probe}=setup('https://www.youtube.com/watch?v=abc123',{videos:[v]});
+ assert.equal(probe.sourceAudio().url,undefined);
+ v.mediaKeys={};
+ assert.equal(probe.sourceAudio().drm,true);
+ assert.equal(probe.sourceAudio().url,undefined);
+});

@@ -118,6 +118,32 @@
   }
 
   window.__voicedubProbe = Object.freeze({
+    // Called only after a user requested VOT and explicitly allowed source upload.
+    // Read public player metadata; do not decipher signatures or intercept requests.
+    sourceAudio() {
+      const video = activeVideo();
+      if (!video) return {error:'no-video'};
+      const identity = videoId(video);
+      const key = `${identity.id}|${fingerprint(video.src || video.currentSrc || '')}`;
+      const base = {videoId:identity.id, playerKey:key, drm:!!video.mediaKeys};
+      if (base.drm) return base;
+      try {
+        const doc = video.ownerDocument;
+        const win = doc.defaultView;
+        const player = doc.getElementById?.('movie_player');
+        const response = player?.getPlayerResponse?.() || win?.ytInitialPlayerResponse;
+        if (identity.id.startsWith('youtube:') && response?.videoDetails?.videoId === identity.id.slice(8)) {
+          if (response.streamingData?.licenseInfos?.length || response.streamingData?.drmFamilies?.length) return {...base,drm:true};
+          const formats = (response.streamingData?.adaptiveFormats || []).filter(f =>
+            typeof f.url === 'string' && f.mimeType?.startsWith('audio/') && !f.signatureCipher && !f.cipher && !f.drmFamilies?.length);
+          formats.sort((a,b) => Number(b.audioTrack?.audioIsDefault === true) - Number(a.audioTrack?.audioIsDefault === true) || (a.bitrate || Infinity) - (b.bitrate || Infinity));
+          if (formats[0]) return {...base,url:formats[0].url};
+        }
+        const source = video.querySelector?.('source[type^="audio/"]');
+        if (source?.src) return {...base,url:source.src};
+      } catch (_) { /* Missing, cross-origin or inaccessible player metadata. */ }
+      return {...base,error:'source-unavailable'};
+    },
     snapshot() {
       const video = activeVideo();
       drawBadge(video);

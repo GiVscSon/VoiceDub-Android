@@ -3859,22 +3859,30 @@
   // engine.js
   var pending = /* @__PURE__ */ new Map();
   var counter = 0;
+  var active = null;
+  var CHUNK_BYTES = 5295308;
   var to64 = (bytes) => {
-    let s = "";
-    for (const b of bytes) s += String.fromCharCode(b);
-    return btoa(s);
+    const parts = [];
+    for (let i = 0; i < bytes.length; i += 32768) parts.push(String.fromCharCode(...bytes.subarray(i, i + 32768)));
+    return btoa(parts.join(""));
   };
   var from64 = (value) => Uint8Array.from(atob(value), (c) => c.charCodeAt(0));
-  var fetchNative = async (url, options = {}) => {
+  var current = (state) => active === state && !state.cancelled;
+  var emit = (state, value) => {
+    if (current(state)) VotNative.result(state.request.job, JSON.stringify(value));
+  };
+  var fetchNative = (state) => async (url, options = {}) => {
+    if (!current(state)) throw new Error("cancelled");
     const id = String(++counter);
     const body = options.body instanceof Blob ? new Uint8Array(await options.body.arrayBuffer()) : new Uint8Array(options.body || []);
+    if (!current(state)) throw new Error("cancelled");
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         pending.delete(id);
         reject(new Error("network-timeout"));
       }, 35e3);
-      pending.set(id, { resolve, reject, timer });
-      VotNative.request(id, String(url), JSON.stringify(options.headers || {}), to64(body));
+      pending.set(id, { resolve, reject, timer, state });
+      VotNative.request(state.request.job, id, String(options.method || "POST"), String(url), JSON.stringify(options.headers || {}), to64(body));
     });
   };
   globalThis.__votNetworkResult = (id, status, data) => {
@@ -3882,25 +3890,92 @@
     if (!job) return;
     pending.delete(id);
     clearTimeout(job.timer);
-    if (status < 100) {
-      job.reject(new Error("network-failed"));
+    if (!current(job.state)) {
+      job.reject(new Error("cancelled"));
+      return;
+    }
+    if (status !== 200) {
+      job.reject(new Error(status >= 100 ? `http-${status}` : "network-failed"));
       return;
     }
     job.resolve(new Response(from64(data), { status }));
   };
-  var client = new VOTClient({ fetchFn: fetchNative, requestLang: "en", responseLang: "ru" });
+  function fail(state, error2, stage) {
+    const detail = error2 == null ? void 0 : error2.data;
+    const marker = typeof (detail == null ? void 0 : detail.data) === "string" ? detail.data.match(/^http-(\d{3})$/) : null;
+    const status = marker ? Number(marker[1]) : 0;
+    const kind = (detail == null ? void 0 : detail.status) === 7 ? "auth_required" : status === 401 || status === 403 ? "http_auth" : status === 429 ? "rate_limit" : status >= 500 ? "server" : status ? "http" : (detail == null ? void 0 : detail.success) === false ? "network" : (error2 == null ? void 0 : error2.message) === "source-unavailable" ? "source_unavailable" : "service";
+    emit(state, { ok: false, error: kind, stage: (error2 == null ? void 0 : error2.message) === "Failed to request create session" ? "session" : stage, httpStatus: status });
+  }
+  globalThis.__votCancel = () => {
+    if (active) active.cancelled = true;
+    active = null;
+    for (const item of pending.values()) {
+      clearTimeout(item.timer);
+      item.reject(new Error("cancelled"));
+    }
+    pending.clear();
+  };
   globalThis.__votTranslate = async (request) => {
+    if (!active || active.request.job !== request.job) {
+      globalThis.__votCancel();
+      const state2 = { request, cancelled: false, busy: false, first: true, translationId: null, uploaded: false };
+      active = state2;
+      state2.client = new VOTClient({ fetchFn: fetchNative(state2), requestLang: "auto", responseLang: "ru" });
+    }
+    const state = active;
+    if (state.busy) return;
+    state.busy = true;
     try {
-      const result = await client.translateVideo({
+      const result = await state.client.translateVideo({
         videoData: { url: request.url, videoId: request.videoId, host: request.host, duration: request.duration },
-        requestLang: request.language,
-        responseLang: "ru",
-        extraOpts: { useLivelyVoice: request.lively === true },
+        requestLang: request.language || "auto",
+        responseLang: request.target || "ru",
+        extraOpts: { useLivelyVoice: request.lively === true, firstRequest: state.first, forceSourceLang: request.language !== "auto" },
         shouldSendFailedAudio: false
       });
-      VotNative.result(request.job, JSON.stringify({ ok: true, ...result }));
-    } catch (_) {
-      VotNative.result(request.job, JSON.stringify({ ok: false, error: "vot-request-failed" }));
+      if (!current(state)) return;
+      state.first = false;
+      state.translationId = result.translationId || null;
+      if (result.status === 6 && !state.translationId) throw new Error("source-unavailable");
+      emit(state, { ok: true, ...result, sourceAlreadyUploaded: state.uploaded });
+    } catch (error2) {
+      fail(state, error2, "translate");
+    } finally {
+      state.busy = false;
+    }
+  };
+  globalThis.__votUploadSource = async (request) => {
+    const state = active;
+    if (!state || state.request.job !== request.job || state.busy || !state.translationId) return;
+    if (!Number.isInteger(request.parts) || request.parts < 1 || request.parts > 16 || state.uploaded) {
+      emit(state, { ok: false, error: "source_unavailable", stage: "upload" });
+      return;
+    }
+    state.busy = true;
+    const fileId = `voicedub:${state.request.videoId}:${state.request.job}`;
+    try {
+      for (let index = 0; index < request.parts; index++) {
+        if (!current(state)) return;
+        const encoded = VotNative.sourcePart(request.job, index);
+        const data = from64(encoded);
+        if (!data.length || data.length > CHUNK_BYTES || index < request.parts - 1 && data.length !== CHUNK_BYTES) throw new Error("source-unavailable");
+        const result = await state.client.provider.requestVtransAudio(
+          state.request.url,
+          state.translationId,
+          { audioFile: data, chunkId: index },
+          { audioPartsLength: request.parts, fileId, version: 1 }
+        );
+        if (!current(state)) return;
+        if (!result || !Number.isInteger(result.status)) throw new Error("upload-rejected");
+        emit(state, { ok: true, uploading: true, uploadedParts: index + 1, totalParts: request.parts });
+      }
+      state.uploaded = true;
+      emit(state, { ok: true, uploaded: true });
+    } catch (error2) {
+      fail(state, error2, "upload");
+    } finally {
+      state.busy = false;
     }
   };
   VotNative.ready();

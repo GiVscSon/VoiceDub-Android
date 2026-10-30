@@ -1,3 +1,9 @@
+import java.io.File as JavaFile
+import java.net.URL
+import java.security.MessageDigest
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -11,10 +17,18 @@ android {
         applicationId = "com.voicedub.app.preview"
         minSdk = 29
         targetSdk = 35
-        versionCode = 6
-        versionName = "0.5.0-alpha"
+        versionCode = 9
+        versionName = "0.6.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
+
+    flavorDimensions += "runtime"
+    productFlavors {
+        create("core") { dimension = "runtime"; versionNameSuffix = "-core"; manifestPlaceholders["appLabel"] = "VoiceDub Core" }
+        create("tiny") { dimension = "runtime"; manifestPlaceholders["appLabel"] = "VoiceDub" }
+    }
+
+    sourceSets.getByName("tiny").assets.srcDir(rootProject.file("third-party"))
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -30,6 +44,14 @@ android {
             keyPassword = "android"
         }
     }
+    buildTypes {
+        getByName("release") {
+            isDebuggable = false
+            // Preserve updates and downloaded models for existing sideload installations.
+            // This public compatibility certificate is not a Play Store signing identity.
+            signingConfig = signingConfigs.getByName("debug")
+        }
+    }
 }
 
 dependencies {
@@ -40,3 +62,33 @@ dependencies {
     androidTestImplementation("androidx.test:rules:1.6.1")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
 }
+
+// Pinned optional Android runtime. Core builds never download or package it.
+val sherpaAar = layout.buildDirectory.file("sherpa/sherpa-onnx-2.0.1.aar")
+val fetchSherpaRuntime = tasks.register("fetchSherpaRuntime") {
+    outputs.file(sherpaAar)
+    doLast {
+        val file = sherpaAar.get().asFile
+        file.parentFile.mkdirs()
+        val temp = JavaFile(file.parentFile, file.name + ".part")
+        try {
+            val digest = MessageDigest.getInstance("SHA-256")
+            val connection = URL("https://github.com/k2-fsa/sherpa-onnx/releases/download/v2.0.1/sherpa-onnx-2.0.1.aar").openConnection()
+            connection.connectTimeout = 15000; connection.readTimeout = 30000
+            connection.getInputStream().use { input ->
+                temp.outputStream().use { output ->
+                    val buffer = ByteArray(65536)
+                    var size = 0L
+                    while (true) {
+                        val n = input.read(buffer); if (n < 0) break
+                        size += n; check(size <= 49441341L)
+                        digest.update(buffer, 0, n); output.write(buffer, 0, n)
+                    }
+                }
+            }
+            check(digest.digest().joinToString("") { "%02x".format(it) } == "a8d09d1d32f3eb8520482c6d3d43fae674681c5b050385967c70a3c2c9bf0ee7") { "Sherpa runtime checksum mismatch" }
+            Files.move(temp.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING)
+        } finally { temp.delete() }
+    }
+}
+dependencies { add("tinyImplementation", files(sherpaAar).builtBy(fetchSherpaRuntime)) }

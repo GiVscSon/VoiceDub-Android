@@ -56,7 +56,7 @@ class MainActivity : Activity() {
             setPadding(margin, dp(16), margin, dp(24))
         }
         screen.addView(content)
-        content.addView(paragraph("VoiceDub · голосовой перевод видео", 24f))
+        content.addView(paragraph("VoiceDub ${BuildConfig.VERSION_NAME} · голосовой перевод видео", 24f))
         content.addView(paragraph("Работает на Android 10+; телефон и планшет. Захватывает доступный внутренний звук, не записывает изображение и не требует root."))
         content.addView(paragraph("Язык исходного видео:"))
         selector = Spinner(this)

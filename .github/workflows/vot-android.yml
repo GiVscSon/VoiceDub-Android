@@ -4,6 +4,7 @@ on:
     branches: [main]
     paths: ['app/**', 'vot-runtime/**', '.github/workflows/vot-android.yml']
   workflow_dispatch:
+  workflow_call:
 permissions:
   contents: read
 jobs:

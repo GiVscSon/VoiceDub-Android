@@ -11,6 +11,8 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    outputs:
+      version: ${{ steps.release-package.outputs.version }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -44,8 +46,8 @@ jobs:
           gradle-version: '8.9'
       - name: Install Android SDK platform
         run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
-      - name: Kotlin JVM tests and signed debug APK
-        run: gradle --no-daemon --stacktrace :app:testCoreDebugUnitTest :app:assembleCoreDebug :app:testTinyDebugUnitTest :app:assembleTinyDebug
+      - name: Kotlin JVM tests and signed APKs
+        run: gradle --no-daemon --stacktrace :app:testCoreDebugUnitTest :app:assembleCoreDebug :app:testTinyDebugUnitTest :app:assembleTinyDebug :app:testTinyReleaseUnitTest :app:assembleTinyRelease
       - name: Verify APK signature and package
         run: |
           "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs app/build/outputs/apk/core/debug/app-core-debug.apk
@@ -53,6 +55,15 @@ jobs:
           python3 -c 'assert "com.voicedub.app.preview" in open("apk-badging.txt").read()'
           "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs app/build/outputs/apk/tiny/debug/app-tiny-debug.apk
           sha256sum app/build/outputs/apk/*/debug/*.apk
+      - name: Verify and package the installable release
+        id: release-package
+        run: python3 scripts/package_release.py
+      - name: Upload installable release
+        uses: actions/upload-artifact@v4
+        with:
+          name: VoiceDub-release-apk
+          path: release/
+          if-no-files-found: error
       - name: Package PC voice server
         run: python3 -c 'import pathlib,zipfile; z=zipfile.ZipFile("VoiceDub-PC-server-v0.5.0.zip","w",zipfile.ZIP_DEFLATED); [z.write(p,p.name) for p in pathlib.Path("companion").iterdir() if p.is_file()]; z.close()'
       - name: Upload APK
@@ -78,4 +89,31 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Android-unit-test-results
-          path: app/build/test-results/test*DebugUnitTest/
+          path: app/build/test-results/test*UnitTest/
+  local-models:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/vot-android.yml
+  publish:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [build, local-models]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: VoiceDub-release-apk
+          path: release
+      - name: Publish verified APK and checksums
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          set -euo pipefail
+          tag="v${RELEASE_VERSION}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag already exists; preserving its assets."
+            exit 0
+          fi
+          gh release create "$tag" --target "$GITHUB_SHA" --title "VoiceDub ${RELEASE_VERSION}" --notes-file "release/RELEASE-${RELEASE_VERSION}.md" release/*.apk release/SHA256SUMS.txt release/validation.json

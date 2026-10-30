@@ -17,15 +17,15 @@ android {
         applicationId = "com.voicedub.app.preview"
         minSdk = 29
         targetSdk = 35
-        versionCode = 8
-        versionName = "0.6.0-local-preview"
+        versionCode = 9
+        versionName = "0.6.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     flavorDimensions += "runtime"
     productFlavors {
-        create("core") { dimension = "runtime"; versionNameSuffix = "-core"; manifestPlaceholders["appLabel"] = "VoiceDub 0.6 Core" }
-        create("tiny") { dimension = "runtime"; versionNameSuffix = "-tiny"; manifestPlaceholders["appLabel"] = "VoiceDub 0.6 Tiny" }
+        create("core") { dimension = "runtime"; versionNameSuffix = "-core"; manifestPlaceholders["appLabel"] = "VoiceDub Core" }
+        create("tiny") { dimension = "runtime"; manifestPlaceholders["appLabel"] = "VoiceDub" }
     }
 
     sourceSets.getByName("tiny").assets.srcDir(rootProject.file("third-party"))
@@ -42,6 +42,14 @@ android {
             storePassword = "android"
             keyAlias = "androiddebugkey"
             keyPassword = "android"
+        }
+    }
+    buildTypes {
+        getByName("release") {
+            isDebuggable = false
+            // Preserve updates and downloaded models for existing sideload installations.
+            // This public compatibility certificate is not a Play Store signing identity.
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
 }

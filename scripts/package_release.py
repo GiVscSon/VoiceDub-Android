@@ -37,8 +37,11 @@ assert package.group(2) == version_code and package.group(3) == version
 with zipfile.ZipFile(apk) as archive:
     assert archive.testzip() is None
     abis = sorted({name.split('/')[1] for name in archive.namelist() if name.startswith('lib/') and name.endswith('.so')})
-    assert set(abis) == {'arm64-v8a', 'armeabi-v7a', 'x86', 'x86_64'}, 'Universal APK is incomplete'
-    assert any('sherpa' in name and name.endswith('.so') for name in archive.namelist()), 'Tiny runtime missing'
+    required_abis = {'arm64-v8a', 'armeabi-v7a', 'x86', 'x86_64'}
+    # Vosk/JNA also carries legacy ABI directories; those do not remove support.
+    assert required_abis.issubset(abis), f'Universal APK is missing ABIs: {required_abis - set(abis)}'
+    for abi in required_abis:
+        assert f'lib/{abi}/libsherpa-onnx-jni.so' in archive.namelist(), f'Tiny runtime missing for {abi}'
 
 destination = root / 'release'
 destination.mkdir(exist_ok=True)

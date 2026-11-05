@@ -52,6 +52,7 @@ class VideoTextController(
     private var resumed = false
     private var closed = false
     private var busy = false
+    private var captureToken = 0
     private var generation = 0
     private var playerKey = ""
     private var frameBounds: Rect? = null
@@ -176,42 +177,62 @@ class VideoTextController(
         val bitmap = try { Bitmap.createBitmap(sample.first, sample.second, Bitmap.Config.ARGB_8888) }
         catch (_: RuntimeException) { info("OCR: недостаточно памяти для кадра"); return }
         val epoch = generation
+        val token = ++captureToken
         busy = true
-        // Do not teach OCR to recognize its own translated overlay.
+        // Give the window one render interval to omit the previous translation
+        // layer before copying. Never draw previous OCR labels into future OCR.
         overlay.visibility = View.INVISIBLE
-        try {
-            PixelCopy.request(activity.window, windowRect, bitmap, { code ->
-                overlay.visibility = if (enabled && resumed) View.VISIBLE else View.GONE
-                if (closed || epoch != generation || !enabled || !resumed || code != PixelCopy.SUCCESS) {
-                    bitmap.recycle()
-                    busy = false
-                    if (code != PixelCopy.SUCCESS && enabled && resumed) info("OCR: кадр недоступен (возможно, защищённое видео)")
-                    return@request
-                }
-                try {
-                    recognizer.process(InputImage.fromBitmap(bitmap, 0))
-                        .addOnSuccessListener { found ->
-                            if (!closed && epoch == generation && enabled && resumed) {
-                                consume(found, windowRect, bitmap.width, bitmap.height, rootPos)
+        main.postDelayed({
+            if (closed || token != captureToken || !enabled || !resumed) {
+                bitmap.recycle()
+                return@postDelayed
+            }
+            try {
+                PixelCopy.request(activity.window, windowRect, bitmap, { code ->
+                    if (token == captureToken) {
+                        overlay.visibility = if (enabled && resumed) View.VISIBLE else View.GONE
+                    }
+                    if (closed || token != captureToken || epoch != generation ||
+                        !enabled || !resumed || code != PixelCopy.SUCCESS) {
+                        bitmap.recycle()
+                        if (token == captureToken) busy = false
+                        if (code != PixelCopy.SUCCESS && token == captureToken && enabled && resumed) {
+                            info("OCR: кадр недоступен (возможно, защищённое видео)")
+                        }
+                        return@request
+                    }
+                    try {
+                        recognizer.process(InputImage.fromBitmap(bitmap, 0))
+                            .addOnSuccessListener { found ->
+                                if (!closed && token == captureToken &&
+                                    epoch == generation && enabled && resumed) {
+                                    consume(found, windowRect, bitmap.width, bitmap.height, rootPos)
+                                }
                             }
-                        }
-                        .addOnFailureListener { if (epoch == generation) info("OCR: не удалось распознать кадр") }
-                        .addOnCompleteListener {
-                            bitmap.recycle()
+                            .addOnFailureListener {
+                                if (token == captureToken) info("OCR: не удалось распознать кадр")
+                            }
+                            .addOnCompleteListener {
+                                bitmap.recycle()
+                                if (token == captureToken) busy = false
+                            }
+                    } catch (_: RuntimeException) {
+                        bitmap.recycle()
+                        if (token == captureToken) {
                             busy = false
+                            info("OCR: ошибка обработки изображения")
                         }
-                } catch (_: RuntimeException) {
-                    bitmap.recycle()
+                    }
+                }, main)
+            } catch (_: RuntimeException) {
+                bitmap.recycle()
+                if (token == captureToken) {
+                    overlay.visibility = if (enabled && resumed) View.VISIBLE else View.GONE
                     busy = false
-                    info("OCR: ошибка обработки изображения")
+                    info("OCR: область видео недоступна для захвата")
                 }
-            }, main)
-        } catch (_: IllegalArgumentException) {
-            overlay.visibility = if (enabled && resumed) View.VISIBLE else View.GONE
-            bitmap.recycle()
-            busy = false
-            info("OCR: область видео вышла за границы экрана")
-        }
+            }
+        }, 32L)
     }
 
     private fun consume(found: Text, frame: Rect, imageW: Int, imageH: Int, rootPos: IntArray) {
@@ -269,6 +290,9 @@ class VideoTextController(
 
     private fun resetPlayer() {
         generation++
+        captureToken++
+        busy = false
+        overlay.visibility = if (enabled && resumed) View.VISIBLE else View.GONE
         playerKey = ""
         frameBounds = null
         pending.clear()

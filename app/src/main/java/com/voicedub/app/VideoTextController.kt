@@ -100,10 +100,16 @@ class VideoTextController(
 
     fun pause() {
         resumed = false
-        generation++
         resetPlayer()
         main.removeCallbacks(ticker)
         overlay.visibility = View.GONE
+        recognizer?.close()
+        translator?.close()
+        recognizer = null
+        translator = null
+        translatorReady = false
+        language = ""
+        target = ""
     }
 
     fun clearPlayer() { resetPlayer() }
@@ -125,28 +131,28 @@ class VideoTextController(
         val route = try { TranslationRoute.create(source, dest) } catch (_: IllegalArgumentException) {
             resetPlayer(); info("OCR: выберите поддерживаемое направление перевода"); return
         }
+        if (key != playerKey) {
+            resetPlayer()
+            playerKey = key
+        }
         if (language != route.source || target != route.target) {
             resetPlayer()
+            playerKey = key
             recognizer?.close()
             translator?.close()
             language = route.source
             target = route.target
             recognizer = createRecognizer(script)
             translatorReady = false
-            val currentGeneration = ++generation
             val engine = LocalTranslationEngine(language, target)
             translator = engine
             engine.prepare { result -> main.post {
-                if (closed || currentGeneration != generation) return@post
+                if (closed || engine !== translator || !enabled || !resumed) return@post
                 translatorReady = result.isSuccess
                 info(if (result.isSuccess) "OCR готов · $language → $target" else
                     "OCR: не удалось загрузить языковую модель перевода")
                 if (result.isSuccess) translateVisible()
             } }
-        }
-        if (key != playerKey) {
-            resetPlayer()
-            playerKey = key
         }
         frameBounds = Rect(rect)
     }

@@ -5,6 +5,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.graphics.Rect
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -35,6 +36,9 @@ class BrowserActivity : Activity() {
     private lateinit var dubLabel: TextView
     private lateinit var root: FrameLayout
     private lateinit var fullscreenCaptions: TextView
+    private lateinit var videoText: VideoTextController
+    private lateinit var videoTextStatus: TextView
+    private lateinit var videoTextEnabled: CheckBox
     private val clearFullscreenCaption = Runnable {
         if (::fullscreenCaptions.isInitialized) fullscreenCaptions.visibility = View.GONE
     }
@@ -130,6 +134,16 @@ class BrowserActivity : Activity() {
                         seeking = data.optBoolean("seeking", false),
                         key = data.optString("playerKey")
                     )
+                    val playing = found && !data.optBoolean("paused", true) &&
+                        !data.optBoolean("seeking", false) && !data.optBoolean("ended", false)
+                    val prefs = getSharedPreferences("settings", MODE_PRIVATE)
+                    videoText.setPlayer(
+                        key = if (found) playerKey else "",
+                        bounds = if (found) videoBoundsInWindow(data) else null,
+                        playing = playing,
+                        source = prefs.getString("sourceLanguage", "en") ?: "en",
+                        dest = prefs.getString("targetLanguage", "ru") ?: "ru"
+                    )
                     if (found) {
                         val name = data.optString("platform")
                         val id = data.optString("videoId")
@@ -204,6 +218,23 @@ class BrowserActivity : Activity() {
             setPadding(12, 8, 12, 8)
         }
         panel.addView(label)
+        videoTextEnabled = CheckBox(this).apply {
+            text = "Переводить надписи на видеокадрах · локальный OCR"
+            isChecked = getSharedPreferences("settings", MODE_PRIVATE)
+                .getBoolean("videoTextOcrEnabled", false)
+            setOnCheckedChangeListener { _, checked ->
+                getSharedPreferences("settings", MODE_PRIVATE).edit()
+                    .putBoolean("videoTextOcrEnabled", checked).apply()
+                if (::videoText.isInitialized) videoText.setEnabled(checked)
+            }
+        }
+        panel.addView(videoTextEnabled)
+        videoTextStatus = TextView(this).apply {
+            text = "OCR выключен. Язык текста берётся из настроек исходного языка VoiceDub."
+            textSize = 12f
+            setPadding(12, 2, 12, 8)
+        }
+        panel.addView(videoTextStatus)
         votLabel = TextView(this).apply { text = "VOT: экспериментальный перевод текущего видео"; textSize = 12f }
         panel.addView(votLabel)
         autoVotLanguage = CheckBox(this).apply { text = "Яндекс: определить язык автоматически"; isChecked = true }
@@ -273,6 +304,7 @@ class BrowserActivity : Activity() {
                 super.onPageStarted(view, url, favicon)
                 cancelVot()
                 clearSource()
+                videoText.clearPlayer()
                 videoIdentity = ""
                 dubLabel.text = "Страница изменилась: предыдущая дорожка отключена"
                 publishPlayback(false, true, false, "")
@@ -296,6 +328,7 @@ class BrowserActivity : Activity() {
                 fullScreenCallback = callback
                 content.visibility = View.GONE
                 root.addView(view, FrameLayout.LayoutParams(-1, -1))
+                videoText.bringToFront()
                 // Fullscreen video is a sibling of the WebView; render captions above it.
                 root.removeView(fullscreenCaptions)
                 root.addView(fullscreenCaptions)
@@ -304,6 +337,8 @@ class BrowserActivity : Activity() {
         }
         content.addView(web, LinearLayout.LayoutParams(-1, 0, 1f))
         setContentView(root)
+        videoText = VideoTextController(this, root) { videoTextStatus.text = it }
+        videoText.setEnabled(videoTextEnabled.isChecked)
         vot = VotEngine(this) { job, result -> receiveVot(job, result) }
         web.loadUrl("https://www.youtube.com")
     }
@@ -466,6 +501,31 @@ class BrowserActivity : Activity() {
         }
     }
 
+    /** Map same-document CSS video coordinates into a clipped Android window rectangle. */
+    private fun videoBoundsInWindow(data: JSONObject): Rect? {
+        val fullscreen = fullScreenView
+        val view = fullscreen ?: web
+        if (view.width <= 0 || view.height <= 0) return null
+        val origin = IntArray(2)
+        view.getLocationInWindow(origin)
+        val viewRect = Rect(origin[0], origin[1], origin[0] + view.width, origin[1] + view.height)
+        if (fullscreen != null) return viewRect
+
+        val css = data.optJSONObject("rect") ?: return null
+        val viewportWidth = data.optDouble("viewportWidth", 0.0)
+        val viewportHeight = data.optDouble("viewportHeight", 0.0)
+        if (viewportWidth <= 0.0 || viewportHeight <= 0.0) return null
+        val scaleX = view.width / viewportWidth
+        val scaleY = view.height / viewportHeight
+        val clipped = Rect(
+            origin[0] + (css.optDouble("left") * scaleX).toInt(),
+            origin[1] + (css.optDouble("top") * scaleY).toInt(),
+            origin[0] + (css.optDouble("right") * scaleX).toInt(),
+            origin[1] + (css.optDouble("bottom") * scaleY).toInt()
+        )
+        return if (clipped.intersect(viewRect) && clipped.width() > 80 && clipped.height() > 60) clipped else null
+    }
+
     private fun navigate() {
         val text = address.text.toString().trim()
         val normalized = if (text.contains("://")) text else "https://$text"
@@ -502,8 +562,25 @@ class BrowserActivity : Activity() {
         unregisterReceiver(subtitleReceiver)
         super.onStop()
     }
-    override fun onResume() { super.onResume(); visible = true; ui.removeCallbacks(poll); ui.post(poll); web.onResume() }
-    override fun onPause() { cancelVot(); publishPlayback(false, true, false, ""); visible = false; ui.removeCallbacks(poll); ui.removeCallbacks(clearFullscreenCaption); fullscreenCaptions.visibility = View.GONE; web.onPause(); super.onPause() }
+    override fun onResume() {
+        super.onResume()
+        visible = true
+        videoText.resume()
+        ui.removeCallbacks(poll)
+        ui.post(poll)
+        web.onResume()
+    }
+    override fun onPause() {
+        cancelVot()
+        publishPlayback(false, true, false, "")
+        visible = false
+        videoText.pause()
+        ui.removeCallbacks(poll)
+        ui.removeCallbacks(clearFullscreenCaption)
+        fullscreenCaptions.visibility = View.GONE
+        web.onPause()
+        super.onPause()
+    }
     override fun onBackPressed() { if (fullScreenView != null) exitFullscreen() else if (web.canGoBack()) web.goBack() else super.onBackPressed() }
     override fun onDestroy() {
         visible = false
@@ -513,6 +590,7 @@ class BrowserActivity : Activity() {
         clearSource()
         publishPlayback(false, true, false, "")
         ui.removeCallbacks(poll)
+        videoText.close()
         exitFullscreen()
         content.removeView(web)
         web.destroy()

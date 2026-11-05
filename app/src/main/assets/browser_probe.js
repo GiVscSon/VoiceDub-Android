@@ -150,6 +150,10 @@
       if (!video) return {found: false, count: videos.size, reason: 'no-visible-html-video'};
       const identity = videoId(video);
       const source = video.currentSrc || video.src || '';
+      // Geometry is from the top-level viewport only. Frames with their own
+      // coordinate system are intentionally not mapped to a wrong screen region.
+      const topLevel = video.ownerDocument === document;
+      const box = topLevel ? video.getBoundingClientRect() : null;
       return {
         found: true, count: videos.size,
         platform: identity.platform, videoId: identity.id,
@@ -157,7 +161,10 @@
         paused: video.paused, seeking: video.seeking, ended: video.ended,
         playerKey: `${identity.id}|${fingerprint(video.src || video.currentSrc || '')}`,
         position: Number.isFinite(video.currentTime) ? Math.round(video.currentTime * 10) / 10 : 0,
-        duration: Number.isFinite(video.duration) ? Math.round(video.duration * 10) / 10 : null
+        duration: Number.isFinite(video.duration) ? Math.round(video.duration * 10) / 10 : null,
+        rect: box ? {left:box.left,top:box.top,right:box.right,bottom:box.bottom} : null,
+        viewportWidth: box ? innerWidth : null,
+        viewportHeight: box ? innerHeight : null
       };
     },
     // Explicit lifecycle functions for future timestamped subtitle and dubbing engines.

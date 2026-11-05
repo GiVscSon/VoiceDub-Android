@@ -64,6 +64,7 @@ class VideoTextController(
     private var lastFrameAt = 0L
     private var lastInfo = ""
     private val pending = mutableSetOf<String>()
+    private val failed = LinkedHashSet<String>()
     private val cache = object : LinkedHashMap<String, String>(64, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, String>?): Boolean = size > 64
     }
@@ -238,15 +239,21 @@ class VideoTextController(
         val epoch = generation
         for (line in lines) {
             val original = line.original
-            if (cache.containsKey(original) || pending.contains(original) || pending.size >= 3) continue
+            if (cache.containsKey(original) || failed.contains(original) ||
+                pending.contains(original) || pending.size >= 3) continue
             pending.add(original)
             engine.translate(original) { result -> main.post {
                 pending.remove(original)
                 if (closed || epoch != generation || !enabled || !resumed) return@post
                 result.onSuccess { translated ->
                     if (translated.isNotBlank()) cache[original] = translated.take(200)
+                    else failed.add(original)
                     render()
-                }.onFailure { info("OCR: модель перевода не смогла обработать текст") }
+                }.onFailure {
+                    failed.add(original)
+                    info("OCR: модель перевода не смогла обработать текст")
+                }
+                while (failed.size > 64) failed.remove(failed.first())
                 translateVisible()
             } }
         }
@@ -265,6 +272,7 @@ class VideoTextController(
         playerKey = ""
         frameBounds = null
         pending.clear()
+        failed.clear()
         cache.clear()
         clearLabels()
     }

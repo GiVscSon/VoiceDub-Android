@@ -18,6 +18,8 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.CheckBox
+import android.widget.Spinner
+import android.widget.ArrayAdapter
 import java.io.File
 import android.widget.Button
 import android.widget.EditText
@@ -39,6 +41,10 @@ class BrowserActivity : Activity() {
     private lateinit var videoText: VideoTextController
     private lateinit var videoTextStatus: TextView
     private lateinit var videoTextEnabled: CheckBox
+    private lateinit var videoTextLanguage: Spinner
+    private val videoTextSources = TranslationLanguages.entries.filter {
+        VideoTextPolicy.scriptFor(it.code) != null
+    }
     private val clearFullscreenCaption = Runnable {
         if (::fullscreenCaptions.isInitialized) fullscreenCaptions.visibility = View.GONE
     }
@@ -141,7 +147,7 @@ class BrowserActivity : Activity() {
                         key = if (found) playerKey else "",
                         bounds = if (found) videoBoundsInWindow(data) else null,
                         playing = playing,
-                        source = prefs.getString("sourceLanguage", "en") ?: "en",
+                        source = videoTextSources.getOrNull(videoTextLanguage.selectedItemPosition)?.code ?: "en",
                         dest = prefs.getString("targetLanguage", "ru") ?: "ru"
                     )
                     if (found) {
@@ -218,6 +224,29 @@ class BrowserActivity : Activity() {
             setPadding(12, 8, 12, 8)
         }
         panel.addView(label)
+        panel.addView(TextView(this).apply {
+            text = "Язык надписей в видео (отдельно от языка речи):"
+            textSize = 12f
+        })
+        videoTextLanguage = Spinner(this).apply {
+            adapter = ArrayAdapter(this@BrowserActivity,
+                android.R.layout.simple_spinner_dropdown_item,
+                videoTextSources.map { it.label })
+            val prefs = getSharedPreferences("settings", MODE_PRIVATE)
+            val selected = prefs.getString("videoOcrSourceLanguage",
+                prefs.getString("sourceLanguage", "en"))
+            setSelection(videoTextSources.indexOfFirst { it.code == selected }.coerceAtLeast(0))
+            onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(
+                    parent: android.widget.AdapterView<*>?, view: View?, position: Int, id: Long
+                ) {
+                    getSharedPreferences("settings", MODE_PRIVATE).edit()
+                        .putString("videoOcrSourceLanguage", videoTextSources[position].code).apply()
+                }
+                override fun onNothingSelected(parent: android.widget.AdapterView<*>?) = Unit
+            }
+        }
+        panel.addView(videoTextLanguage)
         videoTextEnabled = CheckBox(this).apply {
             text = "Переводить надписи на видеокадрах · локальный OCR"
             isChecked = getSharedPreferences("settings", MODE_PRIVATE)
@@ -230,7 +259,7 @@ class BrowserActivity : Activity() {
         }
         panel.addView(videoTextEnabled)
         videoTextStatus = TextView(this).apply {
-            text = "OCR выключен. Язык текста берётся из настроек исходного языка VoiceDub."
+            text = "OCR выключен. Выберите письменность надписей выше; исходный язык речи не меняется."
             textSize = 12f
             setPadding(12, 2, 12, 8)
         }
